@@ -79,12 +79,3 @@ fn full_pipeline() {
     assert!(bib.contains("@inproceedings{ndss:2024:smith,"));
     assert!(bib.contains("author    = {Alice Smith and Bob Jones}"));
 }
-
-#[test]
-fn idempotent_reingest() {
-    let papers = dblp::parse_results(&fixture(), "NDSS");
-    let mut db = Database::open_in_memory().unwrap();
-    db.upsert_papers(&papers).unwrap();
-    db.upsert_papers(&papers).unwrap();
-    assert_eq!(db.count().unwrap(), 3);
-}

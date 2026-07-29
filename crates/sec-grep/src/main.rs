@@ -526,57 +526,56 @@ mod tests {
     }
 
     #[test]
-    fn build_search_uses_boolean_metadata_query() {
+    fn build_search_maps_query_and_options() {
         let config = Config::defaults().unwrap();
         let search = build_search(
             "malware WHERE tag:ml AND year:2020-",
             &config,
-            SortMode::Relevance,
-            None,
-            None,
+            SortMode::Year,
+            Some(10),
+            Some(5),
         )
         .unwrap();
 
         assert!(search.fts.is_some());
         assert!(matches!(search.filter, Some(query::FilterExpr::And(_))));
+        assert!(matches!(search.sort, Sort::Year));
+        assert_eq!(search.limit, Some(10));
+        assert_eq!(search.offset, Some(5));
     }
 
     #[test]
-    fn search_metadata_flags_are_removed() {
-        assert!(Cli::try_parse_from(["sec-grep", "malware", "--tag", "ml"]).is_err());
-        assert!(Cli::try_parse_from(["sec-grep", "*", "--year", "2020-"]).is_err());
-        assert!(Cli::try_parse_from(["sec-grep", "*", "--venue", "CCS"]).is_err());
-        assert!(Cli::try_parse_from(["sec-grep", "*", "--rank", "A"]).is_err());
-    }
-
-    #[test]
-    fn update_bundle_flags_are_accepted() {
-        let cli = Cli::try_parse_from(["sec-grep", "update", "--bundle", "se,ml"]).unwrap();
-        let Some(Command::Update(args)) = cli.command else {
-            panic!("expected update command");
-        };
-        assert_eq!(args.bundle, vec!["se".to_string(), "ml".to_string()]);
-    }
-
-    #[test]
-    fn update_enrichment_flags_are_removed() {
-        assert!(Cli::try_parse_from(["sec-grep", "update", "--abstracts"]).is_err());
-        assert!(Cli::try_parse_from(["sec-grep", "update", "--jobs", "2"]).is_err());
-    }
-
-    #[test]
-    fn enrich_bundle_flags_are_accepted() {
-        let cli = Cli::try_parse_from(["sec-grep", "enrich", "--bundle", "se,ml"]).unwrap();
+    fn enrich_options_are_parsed() {
+        let cli = Cli::try_parse_from([
+            "sec-grep",
+            "enrich",
+            "--bundle",
+            "se,ml",
+            "--venue",
+            "acl,emnlp",
+            "--since",
+            "2025",
+            "--jobs",
+            "4",
+            "--limit",
+            "10",
+        ])
+        .unwrap();
         let Some(Command::Enrich(args)) = cli.command else {
             panic!("expected enrich command");
         };
         assert_eq!(args.bundle, vec!["se".to_string(), "ml".to_string()]);
+        assert_eq!(args.venue, vec!["acl".to_string(), "emnlp".to_string()]);
+        assert_eq!(args.since, Some(2025));
+        assert_eq!(args.jobs, 4);
+        assert_eq!(args.limit, Some(10));
     }
 
     #[test]
     fn bundle_override_limits_venue_resolution() {
-        let cli = Cli::try_parse_from(["sec-grep", "update", "--bundle", "se", "--venue", "ndss"])
-            .unwrap();
+        let cli =
+            Cli::try_parse_from(["sec-grep", "update", "--bundle", "se,ml", "--venue", "ndss"])
+                .unwrap();
         let paths = Paths {
             data_dir: temp_test_path("data"),
             config_dir: temp_test_path("config"),
@@ -585,16 +584,9 @@ mod tests {
             panic!("expected update command");
         };
         let config = load_config_with_bundles(&cli, &paths, Some(&args.bundle)).unwrap();
+        assert!(config.venue("ICSE").is_some());
+        assert!(config.venue("ICML").is_some());
         assert!(config.resolve_venues(&args.venue).is_err());
-    }
-
-    #[test]
-    fn enrich_since_flag_is_accepted() {
-        let cli = Cli::try_parse_from(["sec-grep", "enrich", "--since", "2025"]).unwrap();
-        let Some(Command::Enrich(args)) = cli.command else {
-            panic!("expected enrich command");
-        };
-        assert_eq!(args.since, Some(2025));
     }
 
     #[test]

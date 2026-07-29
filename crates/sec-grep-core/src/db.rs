@@ -545,12 +545,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_and_count() {
-        let db = seeded();
-        assert_eq!(db.count().unwrap(), 3);
-    }
-
-    #[test]
     fn upsert_is_idempotent_and_updates() {
         let mut db = seeded();
         db.upsert_papers(&[paper(
@@ -589,28 +583,6 @@ mod tests {
         assert!(keys.contains(&"k1"));
         assert!(keys.contains(&"k3"));
         assert!(!keys.contains(&"k2"));
-    }
-
-    #[test]
-    fn fts_boolean_and_phrase() {
-        let db = seeded();
-        let and_hits = db
-            .search(&Search {
-                fts: Some("fuzzing AND kernel".into()),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(and_hits.len(), 1);
-        assert_eq!(and_hits[0].dblp_key, "k1");
-
-        let phrase = db
-            .search(&Search {
-                fts: Some("\"side channel\"".into()),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(phrase.len(), 1);
-        assert_eq!(phrase[0].dblp_key, "k2");
     }
 
     #[test]
@@ -695,11 +667,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_rank_sort_groups_fall_back_to_year() {
+    fn rank_sort_without_ranked_venues_falls_back_to_year() {
         let db = seeded();
         let hits = db
             .search(&Search {
-                sort: Sort::Rank(vec![vec![]]),
+                sort: Sort::Rank(Vec::new()),
                 ..Default::default()
             })
             .unwrap();

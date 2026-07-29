@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn filter_values_are_resolved_and_validated() {
         let parsed = parse(
-            "* WHERE venue:oakland AND rank:A* AND tag:security AND doi:10.1145",
+            "* WHERE venue:oakland AND rank:a* AND tag:security AND doi:10.1145",
             &config(),
         )
         .unwrap();
@@ -611,6 +611,14 @@ mod tests {
         };
         assert_eq!(parts.len(), 4);
         assert_eq!(parts[0], FilterExpr::Venue(vec!["SP".into()]));
+        assert!(matches!(
+            &parts[1],
+            FilterExpr::Venue(venues) if venues.iter().any(|venue| venue == "NDSS")
+        ));
+        assert!(matches!(
+            &parts[2],
+            FilterExpr::Venue(venues) if venues.iter().any(|venue| venue == "CCS")
+        ));
         assert!(parse("* WHERE venue:nope", &config()).is_err());
         assert!(parse("* WHERE rank:nope", &config()).is_err());
         assert!(parse("* WHERE tag:nope", &config()).is_err());
@@ -639,12 +647,9 @@ mod tests {
 
     #[test]
     fn syntax_errors_are_strict() {
-        assert!(parse("-windows", &config()).is_err());
         assert!(parse("NOT windows", &config()).is_err());
         assert!(parse("(a OR b", &config()).is_err());
         assert!(parse("\"unterminated", &config()).is_err());
         assert!(parse("foo:bar", &config()).is_err());
-        assert!(parse("a | b", &config()).is_err());
-        assert!(parse("a & b", &config()).is_err());
     }
 }

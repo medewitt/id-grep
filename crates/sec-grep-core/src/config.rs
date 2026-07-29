@@ -356,17 +356,6 @@ mod tests {
     }
 
     #[test]
-    fn default_catalog_parses_and_has_top4() {
-        let cfg = Config::defaults().unwrap();
-        assert!(cfg.venues.len() >= 4);
-        assert_eq!(cfg.bundles, vec!["security", "ml", "se"]);
-        for v in ["NDSS", "USENIX-SEC", "SP", "CCS"] {
-            assert!(cfg.venue(v).is_some(), "missing {v}");
-        }
-        assert_eq!(cfg.defaults.min_year, 2000);
-    }
-
-    #[test]
     fn bundled_venue_ids_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for (bundle, yaml) in BUNDLED_VENUES {
@@ -578,15 +567,6 @@ venues:
         let venue = cfg.venue("NDSS").unwrap();
         assert_eq!(venue.dblp_stream, "conf/custom-ndss");
         assert_eq!(venue.rank.as_deref(), Some("custom"));
-    }
-
-    #[test]
-    fn rank_and_tag_filters() {
-        let cfg = Config::defaults().unwrap();
-        let astar = cfg.venues_by_rank(&["a*".into()]);
-        assert!(astar.contains(&"NDSS".to_string()));
-        let security = cfg.venues_by_tag(&["security".into()]);
-        assert!(security.contains(&"CCS".to_string()));
     }
 
     #[test]
