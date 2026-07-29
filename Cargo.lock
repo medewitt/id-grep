@@ -404,6 +404,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "cs-grep"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "cs-grep-core",
+ "ratatui",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "cs-grep-core"
+version = "0.1.0"
+dependencies = [
+ "csv",
+ "directories",
+ "dotenvy",
+ "futures",
+ "reqwest",
+ "rusqlite",
+ "scraper",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "csscolorparser"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2298,38 +2330,6 @@ dependencies = [
  "precomputed-hash",
  "selectors",
  "tendril",
-]
-
-[[package]]
-name = "sec-grep"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "ratatui",
- "sec-grep-core",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "sec-grep-core"
-version = "0.1.0"
-dependencies = [
- "csv",
- "directories",
- "dotenvy",
- "futures",
- "reqwest",
- "rusqlite",
- "scraper",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

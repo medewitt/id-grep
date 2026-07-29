@@ -606,7 +606,7 @@ fn store_doi_batch_results(
 impl Enricher {
     pub fn new(secrets: Secrets) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("sec-grep/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("cs-grep/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())

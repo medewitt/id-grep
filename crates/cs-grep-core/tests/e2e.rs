@@ -1,9 +1,9 @@
 //! End-to-end pipeline: dblp JSON -> upsert -> parse query -> search -> render.
 
-use sec_grep_core::config::Config;
-use sec_grep_core::db::{Database, Search};
-use sec_grep_core::output::{render, Format};
-use sec_grep_core::{dblp, query};
+use cs_grep_core::config::Config;
+use cs_grep_core::db::{Database, Search};
+use cs_grep_core::output::{render, Format};
+use cs_grep_core::{dblp, query};
 use serde_json::json;
 
 fn fixture() -> serde_json::Value {

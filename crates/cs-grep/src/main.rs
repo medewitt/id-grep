@@ -9,20 +9,20 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use sec_grep_core::abstracts::{EnrichResult, Enricher};
-use sec_grep_core::config::{Config, Paths, Secrets};
-use sec_grep_core::db::{Database, Search, Sort};
-use sec_grep_core::dblp::Dblp;
-use sec_grep_core::output::{self, Column, Format};
-use sec_grep_core::query;
-use sec_grep_core::Paper;
+use cs_grep_core::abstracts::{EnrichResult, Enricher};
+use cs_grep_core::config::{Config, Paths, Secrets};
+use cs_grep_core::db::{Database, Search, Sort};
+use cs_grep_core::dblp::Dblp;
+use cs_grep_core::output::{self, Column, Format};
+use cs_grep_core::query;
+use cs_grep_core::Paper;
 
 /// Upper bound for dblp year filters; papers never exceed this.
 const MAX_YEAR: i32 = 2100;
 
 #[derive(Parser)]
 #[command(
-    name = "sec-grep",
+    name = "cs-grep",
     about = "Search computer science research literature",
     version
 )]
@@ -197,7 +197,7 @@ fn open_db(cli: &Cli, paths: &Paths) -> Result<Database> {
     let path = db_path(cli, paths);
     Database::open_existing(&path).with_context(|| {
         format!(
-            "no database at {}; run `sec-grep init` then `sec-grep update`",
+            "no database at {}; run `cs-grep init` then `cs-grep update`",
             path.display()
         )
     })
@@ -212,11 +212,11 @@ fn cmd_init(cli: &Cli, paths: &Paths) -> Result<()> {
     Database::open(&path).context("creating database")?;
     let config_path = config_path(cli, paths);
     write_default_config(&config_path)?;
-    log_header("sec-grep initialized");
+    log_header("cs-grep initialized");
     log_field("database", path.display());
     log_field("config", config_path.display());
     log_blank();
-    log_field("next", "`sec-grep update`");
+    log_field("next", "`cs-grep update`");
     Ok(())
 }
 
@@ -265,7 +265,7 @@ pub(crate) fn build_search(
     sort: SortMode,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> sec_grep_core::Result<Search> {
+) -> cs_grep_core::Result<Search> {
     let parsed = query::parse(raw_query, config)?;
     let sort = match sort {
         SortMode::Relevance => Sort::Relevance,
@@ -295,7 +295,7 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
     };
     let min_year = args.since.unwrap_or(config.defaults.min_year);
 
-    log_header("sec-grep update");
+    log_header("cs-grep update");
     log_field("bundles", config.bundles.join(", "));
     log_field("venues", venue_ids.len());
     log_field("since", min_year);
@@ -488,7 +488,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("sec-grep-{name}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!("cs-grep-{name}-{}-{nanos}", std::process::id()))
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn enrich_options_are_parsed() {
         let cli = Cli::try_parse_from([
-            "sec-grep",
+            "cs-grep",
             "enrich",
             "--bundle",
             "se,ml",
@@ -539,22 +539,22 @@ mod tests {
 
     #[test]
     fn search_output_options_are_parsed_and_rejected_with_commands() {
-        let cli = Cli::try_parse_from(["sec-grep", "--format", "json", "--fields", "year,title"])
-            .unwrap();
+        let cli =
+            Cli::try_parse_from(["cs-grep", "--format", "json", "--fields", "year,title"]).unwrap();
         assert_eq!(cli.format, Some(Format::Json));
         assert_eq!(cli.fields, vec![Column::Year, Column::Title]);
 
-        let cli = Cli::try_parse_from(["sec-grep", "--format", "json", "update"]).unwrap();
+        let cli = Cli::try_parse_from(["cs-grep", "--format", "json", "update"]).unwrap();
         assert!(reject_search_args_for_subcommands(&cli).is_err());
 
-        let cli = Cli::try_parse_from(["sec-grep", "--db", "papers.db", "update"]).unwrap();
+        let cli = Cli::try_parse_from(["cs-grep", "--db", "papers.db", "update"]).unwrap();
         assert!(reject_search_args_for_subcommands(&cli).is_ok());
     }
 
     #[test]
     fn bundle_override_limits_venue_resolution() {
         let cli =
-            Cli::try_parse_from(["sec-grep", "update", "--bundle", "se,ml", "--venue", "ndss"])
+            Cli::try_parse_from(["cs-grep", "update", "--bundle", "se,ml", "--venue", "ndss"])
                 .unwrap();
         let paths = Paths {
             data_dir: temp_test_path("data"),

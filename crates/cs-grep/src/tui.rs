@@ -15,9 +15,9 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::{build_search, SortMode};
-use sec_grep_core::config::Config;
-use sec_grep_core::db::{Database, Search};
-use sec_grep_core::{Error as CoreError, Paper, Result as CoreResult};
+use cs_grep_core::config::Config;
+use cs_grep_core::db::{Database, Search};
+use cs_grep_core::{Error as CoreError, Paper, Result as CoreResult};
 use url::Url;
 
 const BORDER: Color = Color::Rgb(51, 65, 85);
@@ -769,7 +769,7 @@ fn opener_command(url: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sec_grep_core::config::{Defaults, Venue};
+    use cs_grep_core::config::{Defaults, Venue};
 
     fn paper(index: usize) -> Paper {
         Paper {

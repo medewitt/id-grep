@@ -1,10 +1,10 @@
-# sec-grep
+# cs-grep
 
 Fast, local search across computer science research literature.
 
-![sec-grep TUI](assets/tui.png)
+![cs-grep TUI](assets/tui.png)
 
-`sec-grep` builds a local SQLite/FTS5 index from DBLP and gives you a clean CLI
+`cs-grep` builds a local SQLite/FTS5 index from DBLP and gives you a clean CLI
 and TUI for searching papers with an expressive query language across title,
 authors, abstract, venue, year, rank, tag, and DOI.
 
@@ -19,13 +19,13 @@ authors, abstract, venue, year, rank, tag, and DOI.
 Requires Rust 1.95 or newer.
 
 ```sh
-cargo install --git https://github.com/philippnormann/sec-grep sec-grep
+cargo install --git https://github.com/philippnormann/cs-grep cs-grep
 ```
 
 Or from a local checkout:
 
 ```sh
-cargo install --path crates/sec-grep
+cargo install --path crates/cs-grep
 ```
 
 Cargo installs to `~/.cargo/bin` on macOS/Linux and
@@ -34,16 +34,16 @@ Cargo installs to `~/.cargo/bin` on macOS/Linux and
 Or use [`nix`](https://nixos.org/):
 
 ```sh
-nix run "github:philippnormann/sec-grep" -- <arguments> # run once
-nix shell "github:philippnormann/sec-grep"              # add to PATH
+nix run "github:philippnormann/cs-grep" -- <arguments> # run once
+nix shell "github:philippnormann/cs-grep"              # add to PATH
 ```
 
 ## Use
 
 ```sh
-sec-grep init
-sec-grep update --since 2018
-sec-grep --tui
+cs-grep init
+cs-grep update --since 2018
+cs-grep --tui
 ```
 
 In the TUI, use `Tab` to cycle sort modes, arrow keys to move, and `Enter` to
@@ -55,28 +55,28 @@ Sort CLI results with `--sort relevance`, `--sort year`, `--sort venue`, or
 Search from the shell:
 
 ```sh
-sec-grep 'title:fuzzing WHERE venue:ndss AND year:2020-'
-sec-grep '("side channel" OR cache) WHERE venue:CCS OR venue:SP'
-sec-grep '* WHERE doi:10.1145' --fields venue,year,title,doi
+cs-grep 'title:fuzzing WHERE venue:ndss AND year:2020-'
+cs-grep '("side channel" OR cache) WHERE venue:CCS OR venue:SP'
+cs-grep '* WHERE doi:10.1145' --fields venue,year,title,doi
 ```
 
 More examples:
 
 ```sh
 # Recent malware-detection papers in A/A* venues
-sec-grep 'malware detection WHERE year:2022- AND (rank:A OR rank:A*)' --sort year
+cs-grep 'malware detection WHERE year:2022- AND (rank:A OR rank:A*)' --sort year
 
 # Export matching papers as BibTeX
-sec-grep 'kernel fuzz* WHERE venue:USENIX-SEC' --format bibtex > papers.bib
+cs-grep 'kernel fuzz* WHERE venue:USENIX-SEC' --format bibtex > papers.bib
 
 # Script-friendly JSON output
-sec-grep 'large language model WHERE year:2023-' --format json
+cs-grep 'large language model WHERE year:2023-' --format json
 
 # Limit output for quick triage
-sec-grep '(ransomware OR botnet) WHERE year:2020-' --limit 20
+cs-grep '(ransomware OR botnet) WHERE year:2020-' --limit 20
 
 # Search a custom database path
-sec-grep --db ./papers.db 'symbolic execution WHERE venue:ccs'
+cs-grep --db ./papers.db 'symbolic execution WHERE venue:ccs'
 ```
 
 ## Query Language
@@ -84,7 +84,7 @@ sec-grep --db ./papers.db 'symbolic execution WHERE venue:ccs'
 Queries have a full-text expression followed by optional metadata filters:
 
 ```sh
-sec-grep '(malware OR botnet) WHERE year:2020- AND NOT venue:CCS'
+cs-grep '(malware OR botnet) WHERE year:2020- AND NOT venue:CCS'
 ```
 
 - Both sides support `AND`, `OR`, `NOT`, parentheses, and implicit `AND`.
@@ -98,8 +98,8 @@ Text `NOT` requires a positive text term; metadata filters can be negated
 directly.
 
 ```sh
-sec-grep '* WHERE tag:ml AND tag:security'
-sec-grep '* WHERE tag:ml OR tag:security'
+cs-grep '* WHERE tag:ml AND tag:security'
+cs-grep '* WHERE tag:ml OR tag:security'
 ```
 
 ## Bundles and Tags
@@ -110,28 +110,28 @@ papers by venue family during search. Bundled venues use the broad tags
 tags.
 
 ```sh
-sec-grep update --bundle security,ml
-sec-grep enrich --bundle ml
+cs-grep update --bundle security,ml
+cs-grep enrich --bundle ml
 ```
 
 ```sh
 # ML venue papers
-sec-grep 'mechanistic interpretability WHERE tag:ml AND year:2023-'
+cs-grep 'mechanistic interpretability WHERE tag:ml AND year:2023-'
 
 # Papers from ML-security venues
-sec-grep '(prompt injection OR jailbreak) WHERE tag:ml AND tag:security'
+cs-grep '(prompt injection OR jailbreak) WHERE tag:ml AND tag:security'
 ```
 
 ## Venues
 
-Bundled venue catalogs live in `crates/sec-grep-core/venues/`.
+Bundled venue catalogs live in `crates/cs-grep-core/venues/`.
 
-After `sec-grep init`, you can extend or override the catalog with a user
+After `cs-grep init`, you can extend or override the catalog with a user
 `config.yaml`:
 
-- macOS: `~/Library/Application Support/sec-grep/config.yaml`
-- Linux: `~/.config/sec-grep/config.yaml`
-- Windows: `%APPDATA%\sec-grep\config.yaml`
+- macOS: `~/Library/Application Support/cs-grep/config.yaml`
+- Linux: `~/.config/cs-grep/config.yaml`
+- Windows: `%APPDATA%\cs-grep\config.yaml`
 
 You can also pass a specific file with `--config path/to/config.yaml`.
 
@@ -157,8 +157,8 @@ venues:
 Then ingest and search it:
 
 ```sh
-sec-grep update --venue DIMVA
-sec-grep 'malware WHERE venue:DIMVA'
+cs-grep update --venue DIMVA
+cs-grep 'malware WHERE venue:DIMVA'
 ```
 
 `dblp_stream` is the DBLP stream id used by the RDF endpoint, such as
@@ -166,11 +166,11 @@ sec-grep 'malware WHERE venue:DIMVA'
 
 ## Abstracts
 
-Abstract enrichment is optional, cached, and best-effort. sec-grep uses paper
+Abstract enrichment is optional, cached, and best-effort. cs-grep uses paper
 DOIs and DBLP paper URLs to find abstracts.
 
 ```sh
-sec-grep enrich --jobs 8
+cs-grep enrich --jobs 8
 ```
 
 No API keys are required, but keys can improve rate limits and coverage.
