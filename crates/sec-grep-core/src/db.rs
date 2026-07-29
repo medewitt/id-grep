@@ -4,8 +4,8 @@ use std::path::Path;
 
 use rusqlite::{params_from_iter, types::Value, Connection, OpenFlags, Row};
 
-use crate::config::{RankSortOrder, VenueFilter};
-use crate::query::YearRange;
+use crate::config::RankSortOrder;
+use crate::query::{FilterExpr, YearRange};
 use crate::{Paper, Result};
 
 const SCHEMA: &str = r#"
@@ -68,14 +68,11 @@ pub enum Sort {
     Rank(RankSortOrder),
 }
 
-/// A compiled search request. `fts` is an FTS5 MATCH expression (already
-/// validated by the query module); the rest are SQL-side metadata filters.
+/// A compiled search request.
 #[derive(Debug, Clone, Default)]
 pub struct Search {
     pub fts: Option<String>,
-    pub venue_filter: VenueFilter,
-    pub doi_terms: Vec<String>,
-    pub year_ranges: Vec<YearRange>,
+    pub filter: Option<FilterExpr>,
     pub sort: Sort,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
@@ -212,9 +209,6 @@ impl Database {
     }
 
     pub fn search(&self, q: &Search) -> Result<Vec<Paper>> {
-        if q.venue_filter.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut parts = search_query_parts(q);
         let order = order_clause(q, &mut parts.args);
 
@@ -243,9 +237,6 @@ impl Database {
     }
 
     pub fn search_count(&self, q: &Search) -> Result<usize> {
-        if q.venue_filter.is_empty() {
-            return Ok(0);
-        }
         let parts = search_query_parts(q);
         let sql = format!("SELECT COUNT(*) FROM {} {}", parts.from, parts.where_sql);
         let count: i64 = self
@@ -367,17 +358,8 @@ fn search_query_parts(q: &Search) -> SearchQueryParts {
         "papers p".to_string()
     };
 
-    if let VenueFilter::Only(venues) = &q.venue_filter {
-        where_clauses.push(in_clause("p.venue", args.len() + 1, venues.len()));
-        append_string_args(&mut args, venues);
-    }
-    if !q.year_ranges.is_empty() {
-        where_clauses.push(year_ranges_clause("p.year", args.len() + 1, &q.year_ranges));
-        append_year_range_args(&mut args, &q.year_ranges);
-    }
-    if !q.doi_terms.is_empty() {
-        where_clauses.push(like_any_clause("p.doi", args.len() + 1, q.doi_terms.len()));
-        append_like_args(&mut args, &q.doi_terms);
+    if let Some(filter) = &q.filter {
+        where_clauses.push(filter_clause(filter, &mut args));
     }
 
     let where_sql = if where_clauses.is_empty() {
@@ -391,6 +373,40 @@ fn search_query_parts(q: &Search) -> SearchQueryParts {
         where_sql,
         args,
     }
+}
+
+fn filter_clause(filter: &FilterExpr, args: &mut Vec<Value>) -> String {
+    match filter {
+        FilterExpr::Venue(venues) => {
+            if venues.is_empty() {
+                return "0".to_string();
+            }
+            let clause = in_clause("p.venue", args.len() + 1, venues.len());
+            append_string_args(args, venues);
+            clause
+        }
+        FilterExpr::Year(range) => {
+            let clause = year_ranges_clause("p.year", args.len() + 1, std::slice::from_ref(range));
+            append_year_range_args(args, std::slice::from_ref(range));
+            clause
+        }
+        FilterExpr::Doi(term) => {
+            let clause = like_any_clause("COALESCE(p.doi, '')", args.len() + 1, 1);
+            append_like_args(args, std::slice::from_ref(term));
+            clause
+        }
+        FilterExpr::And(filters) => boolean_filter_clause("AND", filters, args),
+        FilterExpr::Or(filters) => boolean_filter_clause("OR", filters, args),
+        FilterExpr::Not(filter) => format!("NOT ({})", filter_clause(filter, args)),
+    }
+}
+
+fn boolean_filter_clause(operator: &str, filters: &[FilterExpr], args: &mut Vec<Value>) -> String {
+    let clauses = filters
+        .iter()
+        .map(|filter| filter_clause(filter, args))
+        .collect::<Vec<_>>();
+    format!("({})", clauses.join(&format!(" {operator} ")))
 }
 
 fn like_any_clause(column: &str, start: usize, value_count: usize) -> String {
@@ -602,7 +618,7 @@ mod tests {
         let db = seeded();
         let by_venue = db
             .search(&Search {
-                venue_filter: VenueFilter::Only(vec!["NDSS".into(), "SP".into()]),
+                filter: Some(FilterExpr::Venue(vec!["NDSS".into(), "SP".into()])),
                 ..Default::default()
             })
             .unwrap();
@@ -610,7 +626,7 @@ mod tests {
 
         let by_year = db
             .search(&Search {
-                year_ranges: vec![YearRange::new(Some(2020), None).unwrap()],
+                filter: Some(FilterExpr::Year(YearRange::new(Some(2020), None).unwrap())),
                 ..Default::default()
             })
             .unwrap();
@@ -622,7 +638,10 @@ mod tests {
         let db = seeded();
         let hits = db
             .search(&Search {
-                year_ranges: vec![YearRange::single(2019), YearRange::single(2021)],
+                filter: Some(FilterExpr::Or(vec![
+                    FilterExpr::Year(YearRange::single(2019)),
+                    FilterExpr::Year(YearRange::single(2021)),
+                ])),
                 ..Default::default()
             })
             .unwrap();
@@ -631,6 +650,32 @@ mod tests {
             .map(|paper| paper.dblp_key.as_str())
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["k2", "k3"]);
+    }
+
+    #[test]
+    fn boolean_metadata_filters() {
+        let db = seeded();
+        let intersection = db
+            .search(&Search {
+                filter: Some(FilterExpr::And(vec![
+                    FilterExpr::Venue(vec!["NDSS".into(), "SP".into()]),
+                    FilterExpr::Venue(vec!["SP".into(), "CCS".into()]),
+                ])),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(intersection[0].dblp_key, "k3");
+
+        let excluded = db
+            .search(&Search {
+                filter: Some(FilterExpr::Not(Box::new(FilterExpr::Venue(vec![
+                    "CCS".into()
+                ])))),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(excluded.len(), 2);
+        assert!(excluded.iter().all(|paper| paper.venue != "CCS"));
     }
 
     #[test]
@@ -670,11 +715,28 @@ mod tests {
         let db = seeded();
         let hits = db
             .search(&Search {
-                doi_terms: vec!["10.1/x".into()],
+                filter: Some(FilterExpr::Doi("10.1/x".into())),
                 ..Default::default()
             })
             .unwrap();
         assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn negated_doi_filter_includes_missing_dois() {
+        let mut db = seeded();
+        let mut missing = paper("k4", "NDSS", 2022, "Paper without DOI", None);
+        missing.doi = None;
+        db.upsert_papers(&[missing]).unwrap();
+
+        let hits = db
+            .search(&Search {
+                filter: Some(FilterExpr::Not(Box::new(FilterExpr::Doi("10.1/x".into())))),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].dblp_key, "k4");
     }
 
     #[test]
@@ -692,10 +754,10 @@ mod tests {
     }
 
     #[test]
-    fn no_match_short_circuits_search() {
+    fn empty_venue_filter_matches_nothing() {
         let db = seeded();
         let search = Search {
-            venue_filter: VenueFilter::Empty,
+            filter: Some(FilterExpr::Venue(Vec::new())),
             ..Default::default()
         };
         assert_eq!(db.search_count(&search).unwrap(), 0);

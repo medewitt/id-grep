@@ -55,62 +55,57 @@ Sort CLI results with `--sort relevance`, `--sort year`, `--sort venue`, or
 Search from the shell:
 
 ```sh
-sec-grep 'title:fuzzing venue:ndss year:2020-'
-sec-grep '"side channel" OR cache' --venue CCS,SP
-sec-grep 'doi:10.1145' --fields venue,year,title,doi
+sec-grep 'title:fuzzing WHERE venue:ndss AND year:2020-'
+sec-grep '("side channel" OR cache) WHERE venue:CCS OR venue:SP'
+sec-grep '* WHERE doi:10.1145' --fields venue,year,title,doi
 ```
 
 More examples:
 
 ```sh
 # Recent malware-detection papers in A/A* venues
-sec-grep 'malware detection' --year 2022- --rank A --rank 'A*' --sort year
+sec-grep 'malware detection WHERE year:2022- AND (rank:A OR rank:A*)' --sort year
 
 # Export matching papers as BibTeX
-sec-grep 'kernel fuzz*' --venue USENIX-SEC --format bibtex > papers.bib
+sec-grep 'kernel fuzz* WHERE venue:USENIX-SEC' --format bibtex > papers.bib
 
 # Script-friendly JSON output
-sec-grep 'large language model' --year 2023- --format json
+sec-grep 'large language model WHERE year:2023-' --format json
 
 # Limit output for quick triage
-sec-grep 'ransomware OR botnet' --year 2020- --limit 20
+sec-grep '(ransomware OR botnet) WHERE year:2020-' --limit 20
 
 # Search a custom database path
-sec-grep --db ./papers.db 'symbolic execution' --venue ccs
+sec-grep --db ./papers.db 'symbolic execution WHERE venue:ccs'
 ```
 
 ## Query Language
 
-- Boolean search: `AND`, `OR`, `NOT`, parentheses, and quoted phrases.
-- Text fields: `title:`, `author:`, `abstract:`.
-- Metadata filters: `venue:`, `year:`, `rank:`, `tag:`, `doi:`.
-- Prefix search: `fuzz*`.
-
-Year filters accept `2020`, `2018-2024`, `2020-`, and `-2019`.
-
-Metadata filters can be written inline:
+Queries have a full-text expression followed by optional metadata filters:
 
 ```sh
-sec-grep 'malware detection year:2022- rank:A'
+sec-grep '(malware OR botnet) WHERE year:2020- AND NOT venue:CCS'
 ```
 
-or as CLI flags:
+- Both sides support `AND`, `OR`, `NOT`, parentheses, and implicit `AND`.
+- Text supports phrases, trailing prefixes such as `fuzz*`, and the fields
+  `title:`, `author:`, and `abstract:`.
+- `WHERE` supports `venue:`, `year:`, `rank:`, `tag:`, and `doi:`.
+- `*` matches all papers when only metadata filters are needed.
+- Year values can be `2020`, `2018-2024`, `2020-`, or `-2019`.
+
+Text `NOT` requires a positive text term; metadata filters can be negated
+directly.
 
 ```sh
-sec-grep 'malware detection' --year 2022- --rank A
+sec-grep '* WHERE tag:ml AND year:2023-'
+sec-grep '* WHERE tag:ml OR tag:security'
 ```
 
-Boolean operators apply only to full-text terms. Metadata filters are ORed
-within one field and ANDed across fields.
+## Bundles and Tags
 
-```sh
-sec-grep 'malware OR botnet' --rank A --rank 'A*'
-sec-grep 'malware OR botnet' --year 2018 --year 2029
-sec-grep 'malware OR botnet' --rank A --tag systems
-```
-
-Bundles select venue sets for subfields such as security, ML, and software
-engineering. Tags filter papers within the indexed corpus.
+Bundles choose which venue catalogs `update` and `enrich` process. Tags filter
+papers by venue family during search.
 
 ```sh
 sec-grep update --bundle security,ml
@@ -119,10 +114,10 @@ sec-grep enrich --bundle ml
 
 ```sh
 # ML venue papers
-sec-grep 'mechanistic interpretability' --tag ml --year 2023-
+sec-grep 'mechanistic interpretability WHERE tag:ml AND year:2023-'
 
-# AI-security crossover papers
-sec-grep 'prompt injection OR jailbreak' --tag ai-security
+# AI-security venue papers
+sec-grep '(prompt injection OR jailbreak) WHERE tag:ai-security'
 ```
 
 ## Venues
@@ -161,7 +156,7 @@ Then ingest and search it:
 
 ```sh
 sec-grep update --venue DIMVA
-sec-grep 'malware' --venue DIMVA
+sec-grep 'malware WHERE venue:DIMVA'
 ```
 
 `dblp_stream` is the DBLP stream id used by the RDF endpoint, such as

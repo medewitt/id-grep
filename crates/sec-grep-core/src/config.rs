@@ -65,42 +65,6 @@ pub struct Config {
     pub venues: Vec<Venue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum VenueFilter {
-    #[default]
-    All,
-    Only(Vec<String>),
-    Empty,
-}
-
-impl VenueFilter {
-    pub fn from_active_ids(ids: Vec<String>) -> Self {
-        if ids.is_empty() {
-            Self::Empty
-        } else {
-            Self::Only(ids)
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Self::Empty)
-    }
-
-    pub fn intersect(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Empty, _) | (_, Self::Empty) => Self::Empty,
-            (Self::All, filter) | (filter, Self::All) => filter,
-            (Self::Only(left), Self::Only(right)) => {
-                let ids = left
-                    .into_iter()
-                    .filter(|id| right.iter().any(|other| other == id))
-                    .collect::<Vec<_>>();
-                Self::from_active_ids(ids)
-            }
-        }
-    }
-}
-
 pub type RankSortOrder = Vec<Vec<String>>;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -242,32 +206,6 @@ impl Config {
     /// All configured venue ids in catalog order.
     pub fn all_venue_ids(&self) -> Vec<String> {
         self.venues.iter().map(|v| v.id.clone()).collect()
-    }
-
-    /// Resolve venue selectors, rank filters, and tag filters into one venue
-    /// filter. Multiple values within one filter kind are ORed; different
-    /// filter kinds are ANDed.
-    pub fn resolve_venue_filter(
-        &self,
-        venues: &[String],
-        ranks: &[String],
-        tags: &[String],
-    ) -> Result<VenueFilter> {
-        if venues.is_empty() && ranks.is_empty() && tags.is_empty() {
-            return Ok(VenueFilter::All);
-        }
-
-        let mut filter = VenueFilter::All;
-        if !venues.is_empty() {
-            filter = filter.intersect(VenueFilter::from_active_ids(self.resolve_venues(venues)?));
-        }
-        if !ranks.is_empty() {
-            filter = filter.intersect(VenueFilter::from_active_ids(self.venues_by_rank(ranks)));
-        }
-        if !tags.is_empty() {
-            filter = filter.intersect(VenueFilter::from_active_ids(self.venues_by_tag(tags)));
-        }
-        Ok(filter)
     }
 
     /// Venue ids matching the given rank labels (case-insensitive).
@@ -651,42 +589,5 @@ venues:
             .unwrap();
         assert_eq!(ok, vec!["NDSS".to_string(), "SP".to_string()]);
         assert!(cfg.resolve_venues(&["bogus".into()]).is_err());
-    }
-
-    #[test]
-    fn combined_venue_filter_ands_across_filter_kinds() {
-        let cfg = Config::defaults().unwrap();
-        let filter = cfg
-            .resolve_venue_filter(&["ccs".into(), "raid".into()], &["A*".into()], &[])
-            .unwrap();
-        let VenueFilter::Only(ids) = filter else {
-            panic!("expected active venue filter");
-        };
-        assert_eq!(ids, vec!["CCS".to_string()]);
-    }
-
-    #[test]
-    fn combined_venue_filter_ors_within_filter_kind() {
-        let cfg = Config::defaults().unwrap();
-        let filter = cfg
-            .resolve_venue_filter(&[], &["A*".into()], &["privacy".into(), "web".into()])
-            .unwrap();
-        let VenueFilter::Only(ids) = filter else {
-            panic!("expected active venue filter");
-        };
-        assert!(ids.contains(&"NDSS".to_string()));
-        assert!(ids.contains(&"USENIX-SEC".to_string()));
-        assert!(ids.contains(&"SP".to_string()));
-        assert!(ids.contains(&"CCS".to_string()));
-        assert!(!ids.contains(&"RAID".to_string()));
-    }
-
-    #[test]
-    fn combined_venue_filter_preserves_active_empty_filter() {
-        let cfg = Config::defaults().unwrap();
-        let filter = cfg
-            .resolve_venue_filter(&[], &["does-not-exist".into()], &[])
-            .unwrap();
-        assert_eq!(filter, VenueFilter::Empty);
     }
 }

@@ -30,27 +30,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Query string (default action is search). Supports AND/OR/NOT, "phrases",
-    /// title:/author:/abstract: text fields, metadata filters
-    /// (venue:/year:/rank:/tag:/doi:), and prefix*.
+    /// Search expression: text [WHERE metadata filters].
     #[arg(value_name = "QUERY")]
     query: Vec<String>,
-
-    /// Restrict to venues (id or alias), comma- or space-separated.
-    #[arg(long, value_delimiter = ',')]
-    venue: Vec<String>,
-
-    /// Restrict by year: 2020, 2018-2024, 2020-, or -2019.
-    #[arg(long, value_delimiter = ',', allow_hyphen_values = true, value_parser = parse_year_arg)]
-    year: Vec<query::YearRange>,
-
-    /// Restrict by rank label (e.g. A*, A, B).
-    #[arg(long, value_delimiter = ',')]
-    rank: Vec<String>,
-
-    /// Restrict by tag (e.g. crypto, systems).
-    #[arg(long, value_delimiter = ',')]
-    tag: Vec<String>,
 
     /// Result ordering (default: relevance).
     #[arg(long, value_enum)]
@@ -84,10 +66,6 @@ struct Cli {
 impl Cli {
     fn has_search_args(&self) -> bool {
         !self.query.is_empty()
-            || !self.venue.is_empty()
-            || !self.year.is_empty()
-            || !self.rank.is_empty()
-            || !self.tag.is_empty()
             || self.sort.is_some()
             || self.format.is_some()
             || self.limit.is_some()
@@ -155,16 +133,6 @@ pub(crate) enum SortMode {
     Year,
     Venue,
     Rank,
-}
-
-pub(crate) struct SearchOptions<'a> {
-    pub(crate) venues: &'a [String],
-    pub(crate) ranks: &'a [String],
-    pub(crate) tags: &'a [String],
-    pub(crate) years: &'a [query::YearRange],
-    pub(crate) sort: SortMode,
-    pub(crate) limit: Option<usize>,
-    pub(crate) offset: Option<usize>,
 }
 
 #[tokio::main]
@@ -279,15 +247,9 @@ fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
     let search = build_search(
         &raw,
         config,
-        SearchOptions {
-            venues: &cli.venue,
-            ranks: &cli.rank,
-            tags: &cli.tag,
-            years: &cli.year,
-            sort: cli.sort.unwrap_or(SortMode::Relevance),
-            limit: cli.limit,
-            offset: None,
-        },
+        cli.sort.unwrap_or(SortMode::Relevance),
+        cli.limit,
+        None,
     )?;
     let papers = db.search(&search)?;
 
@@ -310,21 +272,12 @@ fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
 pub(crate) fn build_search(
     raw_query: &str,
     config: &Config,
-    options: SearchOptions<'_>,
+    sort: SortMode,
+    limit: Option<usize>,
+    offset: Option<usize>,
 ) -> sec_grep_core::Result<Search> {
-    let parsed = query::parse(raw_query)?;
-    let mut venue_selectors = parsed.venue_selectors;
-    venue_selectors.extend_from_slice(options.venues);
-    let mut rank_selectors = parsed.rank_selectors;
-    rank_selectors.extend_from_slice(options.ranks);
-    let mut tag_selectors = parsed.tag_selectors;
-    tag_selectors.extend_from_slice(options.tags);
-    let mut year_ranges = parsed.year_ranges;
-    year_ranges.extend_from_slice(options.years);
-    let venue_filter =
-        config.resolve_venue_filter(&venue_selectors, &rank_selectors, &tag_selectors)?;
-
-    let sort = match options.sort {
+    let parsed = query::parse(raw_query, config)?;
+    let sort = match sort {
         SortMode::Relevance => Sort::Relevance,
         SortMode::Year => Sort::Year,
         SortMode::Venue => Sort::Venue,
@@ -333,12 +286,10 @@ pub(crate) fn build_search(
 
     Ok(Search {
         fts: parsed.fts,
-        venue_filter,
-        doi_terms: parsed.doi_terms,
-        year_ranges,
+        filter: parsed.filter,
         sort,
-        limit: options.limit,
-        offset: options.offset,
+        limit,
+        offset,
     })
 }
 
@@ -356,10 +307,6 @@ fn parse_columns(fields: &[String]) -> Result<Option<Vec<Column>>> {
 
 fn parse_format_arg(value: &str) -> std::result::Result<Format, String> {
     value.parse::<Format>().map_err(|e| e.to_string())
-}
-
-fn parse_year_arg(value: &str) -> std::result::Result<query::YearRange, String> {
-    query::parse_year_range(value).map_err(|e| e.to_string())
 }
 
 async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
@@ -596,114 +543,27 @@ mod tests {
     }
 
     #[test]
-    fn build_search_preserves_empty_cli_venue_filter() {
+    fn build_search_uses_boolean_metadata_query() {
         let config = Config::defaults().unwrap();
-        let ranks = vec!["does-not-exist".to_string()];
         let search = build_search(
-            "",
+            "malware WHERE tag:ml AND year:2020-",
             &config,
-            SearchOptions {
-                venues: &[],
-                ranks: &ranks,
-                tags: &[],
-                years: &[],
-                sort: SortMode::Relevance,
-                limit: None,
-                offset: None,
-            },
+            SortMode::Relevance,
+            None,
+            None,
         )
         .unwrap();
 
-        assert!(search.venue_filter.is_empty());
+        assert!(search.fts.is_some());
+        assert!(matches!(search.filter, Some(query::FilterExpr::And(_))));
     }
 
     #[test]
-    fn cli_and_inline_metadata_filters_have_same_semantics() {
-        let config = Config::defaults().unwrap();
-        let ranks = vec!["A*".to_string()];
-        let tags = vec!["crypto".to_string()];
-
-        let inline = build_search(
-            "rank:A* tag:crypto",
-            &config,
-            SearchOptions {
-                venues: &[],
-                ranks: &[],
-                tags: &[],
-                years: &[],
-                sort: SortMode::Relevance,
-                limit: None,
-                offset: None,
-            },
-        )
-        .unwrap();
-
-        let cli = build_search(
-            "",
-            &config,
-            SearchOptions {
-                venues: &[],
-                ranks: &ranks,
-                tags: &tags,
-                years: &[],
-                sort: SortMode::Relevance,
-                limit: None,
-                offset: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(inline.venue_filter, cli.venue_filter);
-    }
-
-    #[test]
-    fn cli_and_inline_same_kind_metadata_filters_are_ored() {
-        let config = Config::defaults().unwrap();
-        let ranks = vec!["A*".to_string()];
-
-        let mixed = build_search(
-            "rank:A",
-            &config,
-            SearchOptions {
-                venues: &[],
-                ranks: &ranks,
-                tags: &[],
-                years: &[],
-                sort: SortMode::Relevance,
-                limit: None,
-                offset: None,
-            },
-        )
-        .unwrap();
-
-        let inline = build_search(
-            "rank:A rank:A*",
-            &config,
-            SearchOptions {
-                venues: &[],
-                ranks: &[],
-                tags: &[],
-                years: &[],
-                sort: SortMode::Relevance,
-                limit: None,
-                offset: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(mixed.venue_filter, inline.venue_filter);
-    }
-
-    #[test]
-    fn repeated_year_cli_flags_are_accepted() {
-        let cli = Cli::try_parse_from(["sec-grep", "--year", "2018", "--year", "2029"]).unwrap();
-        assert_eq!(
-            cli.year,
-            vec![
-                query::YearRange::single(2018),
-                query::YearRange::single(2029)
-            ]
-        );
+    fn search_metadata_flags_are_removed() {
+        assert!(Cli::try_parse_from(["sec-grep", "malware", "--tag", "ml"]).is_err());
+        assert!(Cli::try_parse_from(["sec-grep", "*", "--year", "2020-"]).is_err());
+        assert!(Cli::try_parse_from(["sec-grep", "*", "--venue", "CCS"]).is_err());
+        assert!(Cli::try_parse_from(["sec-grep", "*", "--rank", "A"]).is_err());
     }
 
     #[test]
@@ -761,55 +621,5 @@ mod tests {
         write_default_config(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "bundles: []\n");
         let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn open_start_year_cli_flag_is_accepted() {
-        let cli = Cli::try_parse_from(["sec-grep", "--year", "-2019"]).unwrap();
-        assert_eq!(
-            cli.year,
-            vec![query::YearRange::new(None, Some(2019)).unwrap()]
-        );
-    }
-
-    #[test]
-    fn comma_separated_open_start_year_cli_flag_is_accepted() {
-        let cli = Cli::try_parse_from(["sec-grep", "--year", "-2019,2029"]).unwrap();
-        assert_eq!(
-            cli.year,
-            vec![
-                query::YearRange::new(None, Some(2019)).unwrap(),
-                query::YearRange::single(2029)
-            ]
-        );
-    }
-
-    #[test]
-    fn cli_and_inline_same_kind_year_filters_are_ored() {
-        let config = Config::defaults().unwrap();
-        let years = vec![query::YearRange::single(2029)];
-
-        let search = build_search(
-            "year:2018",
-            &config,
-            SearchOptions {
-                venues: &[],
-                ranks: &[],
-                tags: &[],
-                years: &years,
-                sort: SortMode::Relevance,
-                limit: None,
-                offset: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            search.year_ranges,
-            vec![
-                query::YearRange::single(2018),
-                query::YearRange::single(2029)
-            ]
-        );
     }
 }

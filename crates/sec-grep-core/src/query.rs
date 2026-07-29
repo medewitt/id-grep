@@ -1,16 +1,10 @@
-//! Query language: compile user text into FTS and metadata filters.
+//! Query language for full-text search and metadata filters.
 //!
-//! Grammar (loosely):
-//!   or   := and ( ("OR"|"|") and )*
-//!   and  := unary ( ("AND"|"&"|<implicit>) unary )*
-//!   unary:= ("NOT"|"-") unary | primary
-//!   primary := "(" or ")" | field | phrase | term
-//!   field := ("title"|"abstract"|"author"|"venue"|"year"|"rank"|"tag"|"doi") ":" unary
-//!
-//! Terms are emitted as quoted FTS5 strings (trailing `*` => prefix search).
-//! Negation maps to FTS5's binary `x NOT y`, so a negated term must be
-//! combined with at least one positive term.
+//! A query is a full-text expression followed by an optional metadata filter:
+//! `text [WHERE filter]`. Both expressions support AND, OR, NOT, parentheses,
+//! and implicit AND. `*` is the match-all text expression.
 
+use crate::config::Config;
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,14 +42,20 @@ impl YearRange {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterExpr {
+    Venue(Vec<String>),
+    Year(YearRange),
+    Doi(String),
+    And(Vec<FilterExpr>),
+    Or(Vec<FilterExpr>),
+    Not(Box<FilterExpr>),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedQuery {
     pub fts: Option<String>,
-    pub venue_selectors: Vec<String>,
-    pub rank_selectors: Vec<String>,
-    pub tag_selectors: Vec<String>,
-    pub doi_terms: Vec<String>,
-    pub year_ranges: Vec<YearRange>,
+    pub filter: Option<FilterExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +65,7 @@ enum Tok {
     And,
     Or,
     Not,
+    Where,
     Field(FieldKind),
     Term(String),
     Phrase(String),
@@ -72,8 +73,18 @@ enum Tok {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FieldKind {
-    Fts(String),
+    Fts(&'static str),
     Metadata(MetadataField),
+}
+
+impl FieldKind {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Fts("authors") => "author",
+            Self::Fts(field) => field,
+            Self::Metadata(field) => field.label(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,11 +99,11 @@ enum MetadataField {
 impl MetadataField {
     fn label(self) -> &'static str {
         match self {
-            MetadataField::Venue => "venue",
-            MetadataField::Year => "year",
-            MetadataField::Rank => "rank",
-            MetadataField::Tag => "tag",
-            MetadataField::Doi => "doi",
+            Self::Venue => "venue",
+            Self::Year => "year",
+            Self::Rank => "rank",
+            Self::Tag => "tag",
+            Self::Doi => "doi",
         }
     }
 }
@@ -107,33 +118,23 @@ enum Node {
     Not(Box<Node>),
 }
 
-const FIELDS: &[(&str, &str)] = &[
-    ("title", "title"),
-    ("abstract", "abstract"),
-    ("author", "authors"),
-    ("authors", "authors"),
-];
-
-fn map_field(name: &str) -> Option<&'static str> {
-    FIELDS
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, col)| *col)
-}
-
-fn map_metadata_field(name: &str) -> Option<MetadataField> {
-    match name.to_ascii_lowercase().as_str() {
-        "venue" => Some(MetadataField::Venue),
-        "year" => Some(MetadataField::Year),
-        "rank" => Some(MetadataField::Rank),
-        "tag" | "tags" => Some(MetadataField::Tag),
-        "doi" => Some(MetadataField::Doi),
-        _ => None,
-    }
+fn map_field(name: &str) -> Option<FieldKind> {
+    let field = match name.to_ascii_lowercase().as_str() {
+        "title" => FieldKind::Fts("title"),
+        "abstract" => FieldKind::Fts("abstract"),
+        "author" => FieldKind::Fts("authors"),
+        "venue" => FieldKind::Metadata(MetadataField::Venue),
+        "year" => FieldKind::Metadata(MetadataField::Year),
+        "rank" => FieldKind::Metadata(MetadataField::Rank),
+        "tag" => FieldKind::Metadata(MetadataField::Tag),
+        "doi" => FieldKind::Metadata(MetadataField::Doi),
+        _ => return None,
+    };
+    Some(field)
 }
 
 fn is_word_delim(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '(' | ')' | '"' | '&' | '|')
+    c.is_whitespace() || matches!(c, '(' | ')' | '"')
 }
 
 fn tokenize(input: &str) -> Result<Vec<Tok>> {
@@ -155,14 +156,6 @@ fn tokenize(input: &str) -> Result<Vec<Tok>> {
                 out.push(Tok::RParen);
                 i += 1;
             }
-            '&' => {
-                out.push(Tok::And);
-                i += 1;
-            }
-            '|' => {
-                out.push(Tok::Or);
-                i += 1;
-            }
             '"' => {
                 i += 1;
                 let start = i;
@@ -172,51 +165,69 @@ fn tokenize(input: &str) -> Result<Vec<Tok>> {
                 if i >= chars.len() {
                     return Err(Error::Query("unterminated quoted phrase".into()));
                 }
-                let phrase: String = chars[start..i].iter().collect();
-                out.push(Tok::Phrase(phrase));
-                i += 1; // closing quote
+                out.push(Tok::Phrase(chars[start..i].iter().collect()));
+                i += 1;
+            }
+            '&' | '|' => {
+                return Err(Error::Query(format!(
+                    "unsupported operator `{c}`; use `AND` or `OR`"
+                )));
             }
             '-' if i + 1 < chars.len() && !is_word_delim(chars[i + 1]) => {
-                out.push(Tok::Not);
-                i += 1;
+                return Err(Error::Query("unsupported negation `-`; use `NOT`".into()));
             }
             _ => {
                 let start = i;
                 while i < chars.len() && !is_word_delim(chars[i]) {
                     i += 1;
                 }
-                let word: String = chars[start..i].iter().collect();
-                push_word(&mut out, &word);
+                push_word(&mut out, chars[start..i].iter().collect())?;
             }
         }
     }
     Ok(out)
 }
 
-fn push_word(out: &mut Vec<Tok>, word: &str) {
-    // field prefix?
-    if let Some((name, rest)) = word.split_once(':') {
-        if let Some(col) = map_field(name) {
-            out.push(Tok::Field(FieldKind::Fts(col.to_string())));
-            if !rest.is_empty() {
-                out.push(Tok::Term(rest.to_string()));
-            }
-            return;
-        }
-        if let Some(field) = map_metadata_field(name) {
-            out.push(Tok::Field(FieldKind::Metadata(field)));
-            if !rest.is_empty() {
-                out.push(Tok::Term(rest.to_string()));
-            }
-            return;
-        }
-    }
+fn push_word(out: &mut Vec<Tok>, word: String) -> Result<()> {
     match word.to_ascii_uppercase().as_str() {
-        "AND" => out.push(Tok::And),
-        "OR" => out.push(Tok::Or),
-        "NOT" => out.push(Tok::Not),
-        _ => out.push(Tok::Term(word.to_string())),
+        "AND" => {
+            out.push(Tok::And);
+            return Ok(());
+        }
+        "OR" => {
+            out.push(Tok::Or);
+            return Ok(());
+        }
+        "NOT" => {
+            out.push(Tok::Not);
+            return Ok(());
+        }
+        "WHERE" => {
+            out.push(Tok::Where);
+            return Ok(());
+        }
+        _ => {}
     }
+    if let Some((name, rest)) = word.split_once(':') {
+        if let Some(field) = map_field(name) {
+            out.push(Tok::Field(field));
+            if !rest.is_empty() {
+                out.push(Tok::Term(rest.to_string()));
+            }
+            return Ok(());
+        }
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        {
+            return Err(Error::Query(format!(
+                "unknown field `{name}`; expected title, author, abstract, venue, year, rank, tag, or doi"
+            )));
+        }
+    }
+    out.push(Tok::Term(word));
+    Ok(())
 }
 
 struct Parser {
@@ -225,14 +236,25 @@ struct Parser {
 }
 
 impl Parser {
+    fn parse(mut self) -> Result<Node> {
+        let node = self.parse_or()?;
+        if self.pos != self.toks.len() {
+            return Err(Error::Query(format!(
+                "unexpected token: {:?}",
+                self.toks[self.pos]
+            )));
+        }
+        Ok(node)
+    }
+
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos)
     }
 
     fn advance(&mut self) -> Option<Tok> {
-        let t = self.toks.get(self.pos).cloned();
+        let token = self.toks.get(self.pos).cloned();
         self.pos += 1;
-        t
+        token
     }
 
     fn parse_or(&mut self) -> Result<Node> {
@@ -253,7 +275,6 @@ impl Parser {
                     self.advance();
                     nodes.push(self.parse_unary()?);
                 }
-                // implicit AND between adjacent operands
                 _ => nodes.push(self.parse_unary()?),
             }
         }
@@ -277,12 +298,12 @@ impl Parser {
                     _ => Err(Error::Query("expected ')'".into())),
                 }
             }
-            Some(Tok::Field(col)) => {
+            Some(Tok::Field(field)) => {
                 let operand = self.parse_unary()?;
-                Ok(Node::Field(col, Box::new(operand)))
+                Ok(Node::Field(field, Box::new(operand)))
             }
-            Some(Tok::Term(t)) => Ok(Node::Term(t)),
-            Some(Tok::Phrase(p)) => Ok(Node::Phrase(p)),
+            Some(Tok::Term(term)) => Ok(Node::Term(term)),
+            Some(Tok::Phrase(phrase)) => Ok(Node::Phrase(phrase)),
             other => Err(Error::Query(format!("unexpected token: {other:?}"))),
         }
     }
@@ -302,221 +323,298 @@ fn escape(s: &str) -> String {
     s.replace('"', "\"\"")
 }
 
-fn quote_term(t: &str) -> String {
-    if let Some(base) = t.strip_suffix('*') {
-        if !base.is_empty() {
-            return format!("\"{}\"*", escape(base));
+fn quote_term(term: &str) -> String {
+    if let Some(prefix) = term.strip_suffix('*') {
+        if !prefix.is_empty() {
+            return format!("\"{}\"*", escape(prefix));
         }
     }
-    format!("\"{}\"", escape(t))
+    format!("\"{}\"", escape(term))
 }
 
-fn render(node: &Node) -> Result<String> {
+fn render_text(node: &Node) -> Result<String> {
     match node {
-        Node::Term(t) => Ok(quote_term(t)),
-        Node::Phrase(p) => Ok(format!("\"{}\"", escape(p))),
-        Node::Field(FieldKind::Fts(col), inner) => Ok(format!("{col} : ({})", render(inner)?)),
+        Node::Term(term) => Ok(quote_term(term)),
+        Node::Phrase(phrase) => Ok(format!("\"{}\"", escape(phrase))),
+        Node::Field(FieldKind::Fts(column), inner) => {
+            Ok(format!("{column} : ({})", render_text(inner)?))
+        }
         Node::Field(FieldKind::Metadata(field), _) => Err(Error::Query(format!(
-            "{}: is a metadata filter and cannot be rendered as full-text search",
+            "`{}:` is a metadata filter; move it after `WHERE`",
             field.label()
         ))),
         Node::Or(children) => {
-            let parts: Result<Vec<_>> = children.iter().map(render).collect();
-            Ok(format!("({})", parts?.join(" OR ")))
+            let parts = children
+                .iter()
+                .map(render_text)
+                .collect::<Result<Vec<_>>>()?;
+            Ok(format!("({})", parts.join(" OR ")))
         }
         Node::Not(_) => Err(negation_error()),
         Node::And(children) => {
-            let mut pos = Vec::new();
-            let mut neg = Vec::new();
-            for c in children {
-                match c {
-                    Node::Not(inner) => neg.push(render(inner)?),
-                    _ => pos.push(render(c)?),
+            let mut positive = Vec::new();
+            let mut negative = Vec::new();
+            for child in children {
+                match child {
+                    Node::Not(inner) => negative.push(render_text(inner)?),
+                    _ => positive.push(render_text(child)?),
                 }
             }
-            if pos.is_empty() {
+            if positive.is_empty() {
                 return Err(negation_error());
             }
-            let mut s = if pos.len() == 1 {
-                pos.remove(0)
+            let mut rendered = if positive.len() == 1 {
+                positive.remove(0)
             } else {
-                format!("({})", pos.join(" AND "))
+                format!("({})", positive.join(" AND "))
             };
-            for n in neg {
-                s = format!("{s} NOT {n}");
+            for excluded in negative {
+                rendered = format!("{rendered} NOT {excluded}");
             }
-            Ok(s)
+            Ok(rendered)
         }
     }
 }
 
-pub fn parse(input: &str) -> Result<ParsedQuery> {
-    if input.trim().is_empty() {
-        return Ok(ParsedQuery::default());
+fn render_text_root(node: &Node) -> Result<Option<String>> {
+    if matches!(node, Node::Term(term) if term == "*") {
+        return Ok(None);
     }
-    let toks = tokenize(input)?;
-    if toks.is_empty() {
-        return Ok(ParsedQuery::default());
+    if contains_match_all(node) {
+        return Err(Error::Query(
+            "`*` is only valid as the complete text expression".into(),
+        ));
     }
-    let mut parser = Parser { toks, pos: 0 };
-    let node = parser.parse_or()?;
-    if parser.pos != parser.toks.len() {
-        return Err(Error::Query(format!(
-            "unexpected token: {:?}",
-            parser.toks[parser.pos]
-        )));
-    }
-    let mut parsed = ParsedQuery::default();
-    if let Some(fts_node) = collect_metadata(node, &mut parsed)? {
-        parsed.fts = Some(render(&fts_node)?);
-    }
-    Ok(parsed)
+    Ok(Some(render_text(node)?))
 }
 
-/// Parse a user query and return only the FTS5 MATCH expression.
-/// Returns `None` for blank or metadata-only input.
-pub fn fts(input: &str) -> Result<Option<String>> {
-    Ok(parse(input)?.fts)
+fn contains_match_all(node: &Node) -> bool {
+    match node {
+        Node::Term(term) => term == "*",
+        Node::Field(_, inner) | Node::Not(inner) => contains_match_all(inner),
+        Node::And(children) | Node::Or(children) => children.iter().any(contains_match_all),
+        Node::Phrase(_) => false,
+    }
 }
 
-/// Parse a `--year` selector into an inclusive range.
-/// Accepts `2020` (single), `2018-2024` (range), `2020-` (open end),
-/// `-2019` (open start).
+fn render_filter(node: Node, config: &Config) -> Result<FilterExpr> {
+    match node {
+        Node::Field(FieldKind::Metadata(field), inner) => filter_atom(field, *inner, config),
+        Node::And(children) => Ok(FilterExpr::And(
+            children
+                .into_iter()
+                .map(|child| render_filter(child, config))
+                .collect::<Result<_>>()?,
+        )),
+        Node::Or(children) => Ok(FilterExpr::Or(
+            children
+                .into_iter()
+                .map(|child| render_filter(child, config))
+                .collect::<Result<_>>()?,
+        )),
+        Node::Not(inner) => Ok(FilterExpr::Not(Box::new(render_filter(*inner, config)?))),
+        Node::Field(field @ FieldKind::Fts(_), _) => Err(Error::Query(format!(
+            "`{}:` is a full-text field; move it before `WHERE`",
+            field.label()
+        ))),
+        Node::Term(term) | Node::Phrase(term) => Err(Error::Query(format!(
+            "full-text term `{term}` is not allowed after `WHERE`"
+        ))),
+    }
+}
+
+fn filter_atom(field: MetadataField, node: Node, config: &Config) -> Result<FilterExpr> {
+    let value = match node {
+        Node::Term(value) | Node::Phrase(value) => value,
+        _ => {
+            return Err(Error::Query(format!(
+                "`{}:` expects one term or quoted value",
+                field.label()
+            )));
+        }
+    };
+    if value.contains(',') {
+        return Err(Error::Query(
+            "comma-separated filter values are not supported; use `OR`".into(),
+        ));
+    }
+    match field {
+        MetadataField::Venue => {
+            let venue = config.venue(&value).ok_or_else(|| {
+                Error::Query(format!("unknown venue `{value}` in the active catalog"))
+            })?;
+            Ok(FilterExpr::Venue(vec![venue.id.clone()]))
+        }
+        MetadataField::Rank => {
+            let venues = config.venues_by_rank(std::slice::from_ref(&value));
+            if venues.is_empty() {
+                return Err(Error::Query(format!(
+                    "unknown rank `{value}` in the active catalog"
+                )));
+            }
+            Ok(FilterExpr::Venue(venues))
+        }
+        MetadataField::Tag => {
+            let venues = config.venues_by_tag(std::slice::from_ref(&value));
+            if venues.is_empty() {
+                return Err(Error::Query(format!(
+                    "unknown tag `{value}` in the active catalog"
+                )));
+            }
+            Ok(FilterExpr::Venue(venues))
+        }
+        MetadataField::Year => Ok(FilterExpr::Year(parse_year_range(&value)?)),
+        MetadataField::Doi => Ok(FilterExpr::Doi(value)),
+    }
+}
+
+pub fn parse(input: &str, config: &Config) -> Result<ParsedQuery> {
+    let mut tokens = tokenize(input)?;
+    if tokens.is_empty() {
+        return Ok(ParsedQuery::default());
+    }
+
+    let where_positions = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| matches!(token, Tok::Where).then_some(index))
+        .collect::<Vec<_>>();
+    if where_positions.len() > 1 {
+        return Err(Error::Query("query may contain only one `WHERE`".into()));
+    }
+
+    let filter_tokens = where_positions.first().map(|&index| {
+        let filter = tokens.split_off(index + 1);
+        tokens.pop();
+        filter
+    });
+    if tokens.is_empty() {
+        return Err(Error::Query(
+            "missing text expression before `WHERE`; use `* WHERE ...`".into(),
+        ));
+    }
+    if filter_tokens.as_ref().is_some_and(Vec::is_empty) {
+        return Err(Error::Query(
+            "missing metadata expression after `WHERE`".into(),
+        ));
+    }
+
+    let text = Parser {
+        toks: tokens,
+        pos: 0,
+    }
+    .parse()?;
+    let fts = render_text_root(&text)?;
+    let filter = filter_tokens
+        .map(|tokens| {
+            Parser {
+                toks: tokens,
+                pos: 0,
+            }
+            .parse()
+        })
+        .transpose()?
+        .map(|node| render_filter(node, config))
+        .transpose()?;
+    Ok(ParsedQuery { fts, filter })
+}
+
 pub fn parse_year_range(s: &str) -> Result<YearRange> {
     let s = s.trim();
     let bad = || {
         Error::Query(format!(
-            "invalid year selector `{s}`; use `year:2020`, `year:2018-2024`, `year:2020-`, or `year:-2019`"
+            "invalid year `{s}`; use 2020, 2018-2024, 2020-, or -2019"
         ))
     };
-    let year = |t: &str| -> Result<i32> { t.trim().parse::<i32>().map_err(|_| bad()) };
+    let year = |value: &str| -> Result<i32> { value.trim().parse().map_err(|_| bad()) };
     match s.split_once('-') {
-        None => {
-            let y = year(s)?;
-            Ok(YearRange::single(y))
-        }
-        Some((lo, hi)) => {
-            let min = if lo.trim().is_empty() {
-                None
-            } else {
-                Some(year(lo)?)
-            };
-            let max = if hi.trim().is_empty() {
-                None
-            } else {
-                Some(year(hi)?)
-            };
+        None => Ok(YearRange::single(year(s)?)),
+        Some((lower, upper)) => {
+            let min = (!lower.trim().is_empty())
+                .then(|| year(lower))
+                .transpose()?;
+            let max = (!upper.trim().is_empty())
+                .then(|| year(upper))
+                .transpose()?;
             YearRange::new(min, max).map_err(|_| bad())
         }
     }
 }
 
-fn collect_metadata(node: Node, parsed: &mut ParsedQuery) -> Result<Option<Node>> {
-    match node {
-        Node::Field(FieldKind::Fts(_), ref inner) if contains_metadata(inner) => Err(Error::Query(
-            "metadata filters cannot be nested inside title:, author:, or abstract:".into(),
-        )),
-        Node::Term(_) | Node::Phrase(_) | Node::Field(FieldKind::Fts(_), _) => Ok(Some(node)),
-        Node::Field(FieldKind::Metadata(field), inner) => {
-            add_metadata_filter(field, *inner, parsed)?;
-            Ok(None)
-        }
-        Node::And(children) => {
-            let mut kept = Vec::new();
-            for child in children {
-                if let Some(node) = collect_metadata(child, parsed)? {
-                    kept.push(node);
-                }
-            }
-            Ok(collapse_optional(kept, false))
-        }
-        Node::Or(children) => {
-            if children.iter().any(contains_metadata) {
-                return Err(Error::Query(
-                    "metadata filters cannot be combined with OR; use them as filters, e.g. `venue:ndss kernel`".into(),
-                ));
-            }
-            Ok(Some(Node::Or(children)))
-        }
-        Node::Not(inner) => {
-            if contains_metadata(&inner) {
-                return Err(Error::Query(
-                    "metadata filters cannot be negated; combine a positive metadata filter with text terms instead".into(),
-                ));
-            }
-            Ok(Some(Node::Not(inner)))
-        }
-    }
-}
-
-fn collapse_optional(mut nodes: Vec<Node>, or: bool) -> Option<Node> {
-    if nodes.is_empty() {
-        None
-    } else if nodes.len() == 1 {
-        nodes.pop()
-    } else if or {
-        Some(Node::Or(nodes))
-    } else {
-        Some(Node::And(nodes))
-    }
-}
-
-fn contains_metadata(node: &Node) -> bool {
-    match node {
-        Node::Field(FieldKind::Metadata(_), _) => true,
-        Node::Field(FieldKind::Fts(_), inner) | Node::Not(inner) => contains_metadata(inner),
-        Node::And(children) | Node::Or(children) => children.iter().any(contains_metadata),
-        Node::Term(_) | Node::Phrase(_) => false,
-    }
-}
-
-fn add_metadata_filter(field: MetadataField, node: Node, parsed: &mut ParsedQuery) -> Result<()> {
-    let value = metadata_value(field, node)?;
-    match field {
-        MetadataField::Venue => push_csv_values(&mut parsed.venue_selectors, &value),
-        MetadataField::Rank => push_csv_values(&mut parsed.rank_selectors, &value),
-        MetadataField::Tag => push_csv_values(&mut parsed.tag_selectors, &value),
-        MetadataField::Doi => push_csv_values(&mut parsed.doi_terms, &value),
-        MetadataField::Year => {
-            let range = parse_year_range(&value)?;
-            parsed.year_ranges.push(range);
-        }
-    }
-    Ok(())
-}
-
-fn metadata_value(field: MetadataField, node: Node) -> Result<String> {
-    match node {
-        Node::Term(value) | Node::Phrase(value) => Ok(value),
-        _ => Err(Error::Query(format!(
-            "{}: expects a single term or quoted value, e.g. `{}:ndss`",
-            field.label(),
-            field.label()
-        ))),
-    }
-}
-
-fn push_csv_values(values: &mut Vec<String>, raw: &str) {
-    values.extend(
-        raw.split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-    );
-}
-
 fn negation_error() -> Error {
-    Error::Query(
-        "a negated term must be combined with a positive term, e.g. `kernel -windows`".into(),
-    )
+    Error::Query("a negated text term requires a positive term, e.g. `kernel NOT windows`".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn c(s: &str) -> String {
-        fts(s).unwrap().unwrap()
+    fn config() -> Config {
+        Config::defaults().unwrap()
+    }
+
+    fn text(input: &str) -> String {
+        parse(input, &config()).unwrap().fts.unwrap()
+    }
+
+    #[test]
+    fn text_search_syntax() {
+        assert_eq!(text("fuzzing"), "\"fuzzing\"");
+        assert_eq!(text("fuzzing kernel"), "(\"fuzzing\" AND \"kernel\")");
+        assert_eq!(text("a OR b"), "(\"a\" OR \"b\")");
+        assert_eq!(text("(a OR b) c"), "((\"a\" OR \"b\") AND \"c\")");
+        assert_eq!(text("\"side channel\""), "\"side channel\"");
+        assert_eq!(text("fuzz*"), "\"fuzz\"*");
+        assert_eq!(text("title:fuzzing"), "title : (\"fuzzing\")");
+        assert_eq!(text("author:\"jane doe\""), "authors : (\"jane doe\")");
+        assert_eq!(text("kernel NOT windows"), "\"kernel\" NOT \"windows\"");
+    }
+
+    #[test]
+    fn match_all_and_where_boundary() {
+        let parsed = parse("* WHERE tag:security", &config()).unwrap();
+        assert!(parsed.fts.is_none());
+        assert!(matches!(parsed.filter, Some(FilterExpr::Venue(_))));
+
+        assert!(parse("* AND kernel", &config()).is_err());
+        assert!(parse("WHERE tag:ml", &config()).is_err());
+        assert!(parse("* WHERE", &config()).is_err());
+        assert!(parse("* WHERE tag:ml WHERE year:2020", &config()).is_err());
+        assert!(parse("kernel tag:ml", &config()).is_err());
+        assert!(parse("kernel WHERE title:fuzzing", &config()).is_err());
+        assert!(parse("kernel WHERE malware", &config()).is_err());
+    }
+
+    #[test]
+    fn metadata_boolean_tree_is_preserved() {
+        let parsed = parse(
+            "* WHERE (tag:ml AND tag:security) OR NOT year:2020-",
+            &config(),
+        )
+        .unwrap();
+        let Some(FilterExpr::Or(parts)) = parsed.filter else {
+            panic!("expected OR filter");
+        };
+        assert!(matches!(parts[0], FilterExpr::And(_)));
+        assert!(matches!(parts[1], FilterExpr::Not(_)));
+    }
+
+    #[test]
+    fn filter_values_are_resolved_and_validated() {
+        let parsed = parse(
+            "* WHERE venue:oakland AND rank:A* AND tag:crypto AND doi:10.1145",
+            &config(),
+        )
+        .unwrap();
+        let Some(FilterExpr::And(parts)) = parsed.filter else {
+            panic!("expected AND filter");
+        };
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0], FilterExpr::Venue(vec!["SP".into()]));
+        assert!(parse("* WHERE venue:nope", &config()).is_err());
+        assert!(parse("* WHERE rank:nope", &config()).is_err());
+        assert!(parse("* WHERE tag:nope", &config()).is_err());
+        assert!(parse("* WHERE tag:ml,security", &config()).is_err());
     }
 
     #[test]
@@ -537,115 +635,16 @@ mod tests {
         assert!(parse_year_range("-").is_err());
         assert!(parse_year_range("abc").is_err());
         assert!(parse_year_range("2024-2018").is_err());
-        assert!(YearRange::new(None, None).is_err());
     }
 
     #[test]
-    fn blank_is_none() {
-        assert!(fts("").unwrap().is_none());
-        assert!(fts("   ").unwrap().is_none());
-    }
-
-    #[test]
-    fn single_term() {
-        assert_eq!(c("fuzzing"), "\"fuzzing\"");
-    }
-
-    #[test]
-    fn implicit_and() {
-        assert_eq!(c("fuzzing kernel"), "(\"fuzzing\" AND \"kernel\")");
-    }
-
-    #[test]
-    fn explicit_and_matches_implicit() {
-        assert_eq!(c("fuzzing AND kernel"), c("fuzzing kernel"));
-        assert_eq!(c("fuzzing & kernel"), c("fuzzing kernel"));
-    }
-
-    #[test]
-    fn or_expression() {
-        assert_eq!(c("a OR b"), "(\"a\" OR \"b\")");
-        assert_eq!(c("a | b"), "(\"a\" OR \"b\")");
-    }
-
-    #[test]
-    fn phrase() {
-        assert_eq!(c("\"side channel\""), "\"side channel\"");
-    }
-
-    #[test]
-    fn field_scopes() {
-        assert_eq!(c("title:fuzzing"), "title : (\"fuzzing\")");
-        assert_eq!(c("author:\"jane doe\""), "authors : (\"jane doe\")");
-        assert_eq!(c("abstract:rop"), "abstract : (\"rop\")");
-    }
-
-    #[test]
-    fn metadata_filters_are_separated_from_fts() {
-        let parsed =
-            parse("venue:ndss year:2020-2024 rank:A tag:crypto doi:10.1145 fuzzing").unwrap();
-        assert_eq!(parsed.fts.as_deref(), Some("\"fuzzing\""));
-        assert_eq!(parsed.venue_selectors, vec!["ndss"]);
-        assert_eq!(parsed.rank_selectors, vec!["A"]);
-        assert_eq!(parsed.tag_selectors, vec!["crypto"]);
-        assert_eq!(parsed.doi_terms, vec!["10.1145"]);
-        assert_eq!(
-            parsed.year_ranges,
-            vec![YearRange::new(Some(2020), Some(2024)).unwrap()]
-        );
-    }
-
-    #[test]
-    fn repeated_year_filters_are_collected() {
-        let parsed = parse("year:2018 year:2029").unwrap();
-        assert_eq!(
-            parsed.year_ranges,
-            vec![YearRange::single(2018), YearRange::single(2029)]
-        );
-    }
-
-    #[test]
-    fn metadata_only_query_has_no_fts() {
-        let parsed = parse("venue:ndss").unwrap();
-        assert!(parsed.fts.is_none());
-        assert_eq!(parsed.venue_selectors, vec!["ndss"]);
-        assert!(fts("venue:ndss").unwrap().is_none());
-    }
-
-    #[test]
-    fn metadata_filters_reject_or_and_negation() {
-        assert!(parse("venue:ndss OR venue:ccs").is_err());
-        assert!(parse("-venue:ndss").is_err());
-        assert!(parse("title:(venue:ndss)").is_err());
-    }
-
-    #[test]
-    fn negation() {
-        assert_eq!(c("fuzzing -windows"), "\"fuzzing\" NOT \"windows\"");
-        assert_eq!(c("kernel NOT windows"), "\"kernel\" NOT \"windows\"");
-    }
-
-    #[test]
-    fn grouping_and_precedence() {
-        assert_eq!(c("(a OR b) c"), "((\"a\" OR \"b\") AND \"c\")");
-    }
-
-    #[test]
-    fn prefix_search() {
-        assert_eq!(c("fuzz*"), "\"fuzz\"*");
-    }
-
-    #[test]
-    fn unknown_field_is_plain_term() {
-        // `foo:` is not a known field, so it stays a literal token
-        assert_eq!(c("foo:bar"), "\"foo:bar\"");
-    }
-
-    #[test]
-    fn errors() {
-        assert!(fts("-windows").is_err());
-        assert!(fts("(a OR b").is_err());
-        assert!(fts("\"unterminated").is_err());
-        assert!(fts("NOT alone").is_err());
+    fn syntax_errors_are_strict() {
+        assert!(parse("-windows", &config()).is_err());
+        assert!(parse("NOT windows", &config()).is_err());
+        assert!(parse("(a OR b", &config()).is_err());
+        assert!(parse("\"unterminated", &config()).is_err());
+        assert!(parse("foo:bar", &config()).is_err());
+        assert!(parse("a | b", &config()).is_err());
+        assert!(parse("a & b", &config()).is_err());
     }
 }

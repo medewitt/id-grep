@@ -14,7 +14,7 @@ use crossterm::{
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::{build_search, SearchOptions, SortMode};
+use crate::{build_search, SortMode};
 use sec_grep_core::config::Config;
 use sec_grep_core::db::{Database, Search};
 use sec_grep_core::{Error as CoreError, Paper, Result as CoreResult};
@@ -131,19 +131,7 @@ impl App {
     }
 
     fn base_search(&self) -> CoreResult<Search> {
-        build_search(
-            &self.input,
-            &self.config,
-            SearchOptions {
-                venues: &[],
-                ranks: &[],
-                tags: &[],
-                years: &[],
-                sort: self.sort,
-                limit: None,
-                offset: None,
-            },
-        )
+        build_search(&self.input, &self.config, self.sort, None, None)
     }
 
     fn load_window(&mut self, page_size: usize) {
@@ -735,10 +723,7 @@ fn footer() -> Paragraph<'static> {
         ),
         Span::styled(" move  ", Style::default().fg(DIM)),
         Span::styled("\"phrase\"", Style::default().fg(LINK)),
-        Span::styled(
-            "  title:term  venue:ndss  year:2020",
-            Style::default().fg(DIM),
-        ),
+        Span::styled(" WHERE tag:security", Style::default().fg(DIM)),
     ]))
 }
 
