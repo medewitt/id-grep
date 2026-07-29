@@ -98,14 +98,16 @@ Text `NOT` requires a positive text term; metadata filters can be negated
 directly.
 
 ```sh
-sec-grep '* WHERE tag:ml AND year:2023-'
+sec-grep '* WHERE tag:ml AND tag:security'
 sec-grep '* WHERE tag:ml OR tag:security'
 ```
 
 ## Bundles and Tags
 
 Bundles choose which venue catalogs `update` and `enrich` process. Tags filter
-papers by venue family during search.
+papers by venue family during search. Bundled venues use the broad tags
+`security`, `ml`, `nlp`, `cv`, and `se`; custom venues can define additional
+tags.
 
 ```sh
 sec-grep update --bundle security,ml
@@ -116,8 +118,8 @@ sec-grep enrich --bundle ml
 # ML venue papers
 sec-grep 'mechanistic interpretability WHERE tag:ml AND year:2023-'
 
-# AI-security venue papers
-sec-grep '(prompt injection OR jailbreak) WHERE tag:ai-security'
+# Papers from ML-security venues
+sec-grep '(prompt injection OR jailbreak) WHERE tag:ml AND tag:security'
 ```
 
 ## Venues

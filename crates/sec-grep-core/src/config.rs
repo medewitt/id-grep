@@ -382,40 +382,71 @@ mod tests {
     }
 
     #[test]
-    fn default_catalog_has_security_and_ml_venue_groups() {
+    fn bundled_tags_match_venue_families() {
         let cfg = Config::defaults().unwrap();
-        let security = cfg.venues_by_tag(&["security".into()]);
-        for expected in [
-            "NDSS",
-            "USENIX-SEC",
-            "SP",
-            "CCS",
-            "RAID",
-            "ACSAC",
-            "ESORICS",
-            "AsiaCCS",
-            "EuroSP",
-        ] {
-            assert!(
-                security.iter().any(|id| id == expected),
-                "missing {expected}"
+        let expected: [(&str, &[&str]); 5] = [
+            (
+                "security",
+                &[
+                    "NDSS",
+                    "USENIX-SEC",
+                    "SP",
+                    "CCS",
+                    "RAID",
+                    "ACSAC",
+                    "ESORICS",
+                    "AsiaCCS",
+                    "EuroSP",
+                    "AISec",
+                    "SaTML",
+                ],
+            ),
+            (
+                "ml",
+                &[
+                    "AISec", "SaTML", "NeurIPS", "ICML", "ICLR", "ACL", "EMNLP", "CVPR", "ICCV",
+                    "IJCAI", "AAAI",
+                ],
+            ),
+            ("nlp", &["ACL", "EMNLP"]),
+            ("cv", &["CVPR", "ICCV"]),
+            ("se", &["ICSE", "FSE", "ASE"]),
+        ];
+
+        let actual_tags = cfg
+            .venues
+            .iter()
+            .flat_map(|venue| venue.tags.iter().map(String::as_str))
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_tags = expected
+            .iter()
+            .map(|(tag, _)| *tag)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_tags, expected_tags);
+
+        for (tag, expected_venues) in expected {
+            assert_eq!(
+                cfg.venues_by_tag(&[tag.into()])
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                expected_venues
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                "wrong venues for tag {tag}"
             );
         }
 
-        let ml = cfg.venues_by_tag(&["ml".into()]);
-        for expected in ["AISec", "SaTML", "NeurIPS", "ICML", "ICLR"] {
-            assert!(ml.iter().any(|id| id == expected), "missing {expected}");
-        }
-
-        let (_, yaml) = BUNDLED_VENUES
-            .iter()
-            .find(|(bundle, _)| *bundle == "ml")
-            .unwrap();
-        let bundle_file: BundleFile = serde_yaml::from_str(yaml).unwrap();
-        for venue in bundle_file.venues {
-            assert!(
-                venue.tags.iter().any(|tag| tag == "ml"),
-                "ML bundle venue {} is missing the ml tag",
+        for venue in &cfg.venues {
+            assert!(!venue.tags.is_empty(), "{} has no tag", venue.id);
+            assert_eq!(
+                venue
+                    .tags
+                    .iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                venue.tags.len(),
+                "{} has duplicate tags",
                 venue.id
             );
         }
@@ -554,8 +585,8 @@ venues:
         let cfg = Config::defaults().unwrap();
         let astar = cfg.venues_by_rank(&["a*".into()]);
         assert!(astar.contains(&"NDSS".to_string()));
-        let crypto = cfg.venues_by_tag(&["crypto".into()]);
-        assert!(crypto.contains(&"CCS".to_string()));
+        let security = cfg.venues_by_tag(&["security".into()]);
+        assert!(security.contains(&"CCS".to_string()));
     }
 
     #[test]

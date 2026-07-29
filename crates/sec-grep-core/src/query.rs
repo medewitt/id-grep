@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn filter_values_are_resolved_and_validated() {
         let parsed = parse(
-            "* WHERE venue:oakland AND rank:A* AND tag:crypto AND doi:10.1145",
+            "* WHERE venue:oakland AND rank:A* AND tag:security AND doi:10.1145",
             &config(),
         )
         .unwrap();
