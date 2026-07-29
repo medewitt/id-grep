@@ -28,7 +28,11 @@ const MAX_STATIC_REDIRECTS: usize = 5;
 const MAX_RATE_LIMIT_SLEEP: Duration = Duration::from_secs(65);
 const OPENREVIEW_PAGE_SIZE: usize = 500;
 const OPENREVIEW_LOGIN_EXPIRES_IN: u64 = 7 * 24 * 60 * 60;
-const DOI_BATCH_SIZE: usize = 50;
+const SEMANTIC_SCHOLAR_BATCH_SIZE: usize = 500;
+const OPENALEX_BATCH_SIZE: usize = 100;
+const TRANSIENT_RETRY_DELAY: Duration = Duration::from_millis(250);
+const MIN_ABSTRACT_CHARS: usize = 80;
+const MAX_ABSTRACT_CHARS: usize = 6_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum AbstractSource {
@@ -36,6 +40,7 @@ enum AbstractSource {
     Acm,
     Cvf,
     Ieee,
+    Ijcai,
     Ndss,
     Neurips,
     Openreview,
@@ -97,7 +102,10 @@ fn abstract_from_semantic_scholar_title_search(results: &Value, paper: &Paper) -
         .and_then(abstract_from_semantic_scholar)
 }
 
-fn abstracts_from_openalex_works(results: &Value, dois: &[String]) -> HashMap<String, String> {
+fn abstracts_from_openalex_works(
+    results: &Value,
+    expected_titles: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Some(results) = results.get("results").and_then(|v| v.as_array()) else {
         return out;
@@ -107,11 +115,17 @@ fn abstracts_from_openalex_works(results: &Value, dois: &[String]) -> HashMap<St
             .get("doi")
             .and_then(|v| v.as_str())
             .and_then(normalized_doi)
-            .filter(|doi| dois.iter().any(|wanted| wanted == doi))
+            .filter(|doi| {
+                expected_titles
+                    .get(doi)
+                    .is_some_and(|title| json_title_matches(work, title))
+            })
         else {
             continue;
         };
-        if let Some(abs) = abstract_from_openalex(work) {
+        if let Some(abs) = abstract_from_openalex(work)
+            .and_then(|abs| usable_abstract_for_title(abs, &expected_titles[&doi]))
+        {
             out.insert(doi, abs);
         }
     }
@@ -120,7 +134,7 @@ fn abstracts_from_openalex_works(results: &Value, dois: &[String]) -> HashMap<St
 
 fn abstracts_from_semantic_scholar_batch(
     results: &Value,
-    dois: &[String],
+    expected_titles: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Some(results) = results.as_array() else {
@@ -132,11 +146,17 @@ fn abstracts_from_semantic_scholar_batch(
             .and_then(|ids| ids.get("DOI"))
             .and_then(|v| v.as_str())
             .and_then(normalized_doi)
-            .filter(|doi| dois.iter().any(|wanted| wanted == doi))
+            .filter(|doi| {
+                expected_titles
+                    .get(doi)
+                    .is_some_and(|title| json_title_matches(paper, title))
+            })
         else {
             continue;
         };
-        if let Some(abs) = abstract_from_semantic_scholar(paper) {
+        if let Some(abs) = abstract_from_semantic_scholar(paper)
+            .and_then(|abs| usable_abstract_for_title(abs, &expected_titles[&doi]))
+        {
             out.insert(doi, abs);
         }
     }
@@ -200,12 +220,31 @@ fn paper_identity_matches(
 }
 
 fn normalized_match_text(text: &str) -> String {
-    text.trim()
-        .trim_end_matches('.')
+    decode_html_entities(text)
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
+}
+
+fn titles_match(actual: &str, expected: &str) -> bool {
+    normalized_match_text(actual) == normalized_match_text(expected)
+}
+
+fn json_title_matches(value: &Value, expected: &str) -> bool {
+    value
+        .get("title")
+        .or_else(|| value.get("display_name"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|title| titles_match(title, expected))
+}
+
+fn usable_abstract_for_title(raw: String, title: &str) -> Option<String> {
+    let abstract_text = abstract_text(raw)?;
+    (!titles_match(&abstract_text, title)).then_some(abstract_text)
 }
 
 fn normalized_doi(raw: &str) -> Option<String> {
@@ -219,10 +258,11 @@ fn normalized_doi(raw: &str) -> Option<String> {
         "doi:",
     ] {
         if lower.starts_with(prefix) {
-            return non_empty_text(&trimmed[prefix.len()..]).map(|doi| doi.to_ascii_lowercase());
+            let doi = trimmed[prefix.len()..].trim();
+            return (!doi.is_empty()).then(|| doi.to_ascii_lowercase());
         }
     }
-    non_empty_text(trimmed).map(|doi| doi.to_ascii_lowercase())
+    (!trimmed.is_empty()).then(|| trimmed.to_ascii_lowercase())
 }
 
 fn abstracts_from_openreview_notes(notes: &Value) -> HashMap<String, String> {
@@ -260,48 +300,56 @@ fn abstract_from_crossref(message: &Value) -> Option<String> {
     element_text(doc.root_element())
 }
 
+fn crossref_title_matches(message: &Value, expected: &str) -> bool {
+    message
+        .get("title")
+        .and_then(|v| v.as_array())
+        .and_then(|titles| titles.first())
+        .and_then(|v| v.as_str())
+        .is_some_and(|title| titles_match(title, expected))
+}
+
 fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Extract an abstract from a publisher HTML page, trying source-specific
-/// selectors first, then generic `og:description` / `description` meta tags.
-fn extract_abstract_html(html: &str, source: Option<AbstractSource>) -> Option<String> {
+/// Extract abstract candidates from a publisher page in priority order.
+fn abstract_candidates(html: &str, source: Option<AbstractSource>) -> Vec<String> {
     let doc = Html::parse_document(html);
 
-    let source_hit = match source {
-        Some(AbstractSource::Acl) => first_selector_text(&doc, &[".acl-abstract span"]),
+    let mut candidates = match source {
+        Some(AbstractSource::Acl) => selector_texts(&doc, &[".acl-abstract span"]),
         Some(AbstractSource::Acm) => {
-            first_selector_text(&doc, &["div.abstractInFull", "div.abstractSection"])
+            selector_texts(&doc, &["div.abstractInFull", "div.abstractSection"])
         }
-        Some(AbstractSource::Cvf) => first_selector_text(&doc, &["div#abstract"]),
-        Some(AbstractSource::Ieee) => first_selector_text(&doc, &["div.abstract-text"]),
-        Some(AbstractSource::Ndss) => extract_ndss_abstract(&doc),
-        Some(AbstractSource::Neurips) => extract_neurips_abstract(&doc),
-        Some(AbstractSource::Openreview) => first_selector_text(&doc, &[".abstract-text-inner"]),
-        Some(AbstractSource::Pmlr) => first_selector_text(&doc, &["div#abstract"]),
-        Some(AbstractSource::Springer) => first_selector_text(
+        Some(AbstractSource::Cvf) => selector_texts(&doc, &["div#abstract"]),
+        Some(AbstractSource::Ieee) => selector_texts(&doc, &["div.abstract-text"]),
+        Some(AbstractSource::Ijcai) => {
+            selector_texts(&doc, &[".proceedings-detail hr + .row > .col-md-12"])
+        }
+        Some(AbstractSource::Ndss) => extract_ndss_abstract(&doc).into_iter().collect(),
+        Some(AbstractSource::Neurips) => extract_neurips_abstract(&doc).into_iter().collect(),
+        Some(AbstractSource::Openreview) => selector_texts(&doc, &[".abstract-text-inner"]),
+        Some(AbstractSource::Pmlr) => selector_texts(&doc, &["div#abstract"]),
+        Some(AbstractSource::Springer) => selector_texts(
             &doc,
             &[
                 "section[data-title='Abstract'] div.c-article-section__content",
                 "#Abs1-content",
             ],
         ),
-        Some(AbstractSource::Usenix) => first_selector_text(
+        Some(AbstractSource::Usenix) => selector_texts(
             &doc,
             &[
                 "div.field-name-field-paper-description",
                 "div.field-type-text-with-summary",
             ],
         ),
-        _ => None,
+        _ => Vec::new(),
     };
 
-    if source == Some(AbstractSource::Acl) {
-        source_hit
-    } else {
-        source_hit.or_else(|| first_meta_content(&doc))
-    }
+    candidates.extend(meta_contents(&doc));
+    candidates
 }
 
 fn extract_ndss_abstract(doc: &Html) -> Option<String> {
@@ -319,16 +367,19 @@ fn extract_ndss_abstract(doc: &Html) -> Option<String> {
 fn extract_neurips_abstract(doc: &Html) -> Option<String> {
     let selector = Selector::parse("section.paper-section").ok()?;
     for section in doc.select(&selector) {
-        let text = element_text(section)?;
-        if let Some(abstract_text) = text.strip_prefix("Abstract") {
-            return non_empty_text(abstract_text);
+        let text = collapse_ws(&section.text().collect::<String>());
+        if let Some(stripped) = text.strip_prefix("Abstract") {
+            return non_empty_text(stripped);
         }
     }
     let selector = Selector::parse("*").ok()?;
     let mut after_abstract_heading = false;
     for element in doc.select(&selector) {
         match element.value().name() {
-            "h4" => after_abstract_heading = element_text(element).as_deref() == Some("Abstract"),
+            "h4" => {
+                after_abstract_heading =
+                    collapse_ws(&element.text().collect::<String>()) == "Abstract"
+            }
             "p" if after_abstract_heading => {
                 if let Some(text) = element_text(element) {
                     return Some(text);
@@ -341,26 +392,32 @@ fn extract_neurips_abstract(doc: &Html) -> Option<String> {
 }
 
 fn first_selector_text(doc: &Html, selectors: &[&str]) -> Option<String> {
+    selector_texts(doc, selectors).into_iter().next()
+}
+
+fn selector_texts(doc: &Html, selectors: &[&str]) -> Vec<String> {
+    let mut texts = Vec::new();
     for selector in selectors {
         let Ok(selector) = Selector::parse(selector) else {
             continue;
         };
         for element in doc.select(&selector) {
             if let Some(text) = element_text(element) {
-                return Some(text);
+                texts.push(text);
             }
         }
     }
-    None
+    texts
 }
 
-fn first_meta_content(doc: &Html) -> Option<String> {
+fn meta_contents(doc: &Html) -> Vec<String> {
     let selectors = [
         "meta[name='citation_abstract']",
         "meta[property='og:description']",
         "meta[name='description']",
     ];
 
+    let mut texts = Vec::new();
     for selector in selectors {
         let Ok(selector) = Selector::parse(selector) else {
             continue;
@@ -368,47 +425,100 @@ fn first_meta_content(doc: &Html) -> Option<String> {
         for element in doc.select(&selector) {
             if let Some(content) = element.value().attr("content") {
                 if let Some(text) = non_empty_text(content) {
-                    if is_boilerplate_abstract(&text) {
-                        continue;
-                    }
-                    return Some(text);
+                    texts.push(text);
                 }
             }
         }
     }
-    None
+    texts
 }
 
 fn is_boilerplate_abstract(text: &str) -> bool {
+    let year = text.trim_end_matches('.').rsplit(' ').next().unwrap_or("");
     text.starts_with("Promoting openness in scientific communication and the peer-review process")
         || text.starts_with("Electronic proceedings of ")
+        || text.starts_with("Paper presented at ")
+        || text.starts_with("This repository contains ")
+        || (text.len() < 300 && text.starts_with("Warning:"))
+        || (text.len() < 300 && text.contains(" to me ") && text.contains("I am "))
         || ((text.contains("Proceedings of ") || text.contains("Findings of "))
-            && ends_with_year_citation(text))
+            && ((year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()))
+                || text.contains(". In: ")))
 }
 
-fn ends_with_year_citation(text: &str) -> bool {
-    let Some(year) = text.trim_end_matches('.').rsplit(' ').next() else {
-        return false;
-    };
-    year.len() == 4 && year.chars().all(|c| c.is_ascii_digit())
+fn is_url_only(text: &str) -> bool {
+    let lower = text.trim().trim_end_matches('.').to_ascii_lowercase();
+    !lower.contains(char::is_whitespace)
+        && (lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("doi:"))
+}
+
+fn trim_standard_suffix(text: &str) -> &str {
+    let lower = text.to_ascii_lowercase();
+    ["ccs concepts", "acm reference format:", "© 20", "©20"]
+        .iter()
+        .filter_map(|marker| lower.find(marker))
+        .min()
+        .map_or(text, |index| &text[..index])
+        .trim_end()
 }
 
 fn element_text(element: ElementRef) -> Option<String> {
-    non_empty_text(element.text().collect::<Vec<_>>().join(" "))
+    non_empty_text(element.text().collect::<String>())
+}
+
+fn abstract_text(text: impl AsRef<str>) -> Option<String> {
+    let text = non_empty_text(text)?;
+    let text = if text.contains("</") || text.contains("<br") {
+        element_text(Html::parse_fragment(&text).root_element())?
+    } else {
+        text
+    };
+    let text = trim_standard_suffix(&text);
+    let chars = text.chars().count();
+    ((MIN_ABSTRACT_CHARS..=MAX_ABSTRACT_CHARS).contains(&chars)
+        && !text.ends_with("...")
+        && !text.ends_with('…')
+        && !text.contains('�')
+        && !is_boilerplate_abstract(text)
+        && !text.contains("Copy to Clipboard")
+        && !text.contains("Download Related Material")
+        && (chars >= 120 || text.ends_with(['.', '!', '?']))
+        && !is_url_only(text))
+    .then(|| text.to_string())
 }
 
 fn non_empty_text(text: impl AsRef<str>) -> Option<String> {
     let decoded = decode_html_entities(text.as_ref());
     let decoded = decode_html_entities(&decoded);
     let text = strip_abstract_heading(&collapse_ws(&decoded)).to_string();
-    (text.chars().any(char::is_alphabetic) && !is_boilerplate_abstract(&text)).then_some(text)
+    text.chars().any(char::is_alphabetic).then_some(text)
 }
 
 fn strip_abstract_heading(text: &str) -> &str {
-    ["Abstract:", "Abstract -", "Abstract –", "Abstract —"]
+    let text = ["Abstract:", "Abstract -", "Abstract –", "Abstract —"]
         .iter()
         .find_map(|prefix| text.strip_prefix(prefix).map(str::trim_start))
+        .unwrap_or(text);
+    text.strip_prefix("Abstract ")
+        .filter(|rest| {
+            let mut words = rest.split_whitespace();
+            words
+                .next()
+                .is_some_and(|word| word.starts_with(char::is_uppercase))
+                && !words
+                    .next()
+                    .is_some_and(|word| word.starts_with(char::is_uppercase))
+        })
         .unwrap_or(text)
+}
+
+fn static_page_title_matches(html: &str, expected: &str) -> bool {
+    let doc = Html::parse_document(html);
+    let selector = Selector::parse("meta[name='citation_title']").expect("valid selector");
+    doc.select(&selector)
+        .next()
+        .and_then(|element| element.value().attr("content"))
+        .is_none_or(|title| titles_match(title, expected))
 }
 
 fn decode_html_entities(s: &str) -> String {
@@ -478,6 +588,21 @@ enum RateLimitRetry {
     Disabled,
 }
 
+fn store_doi_batch_results(
+    cache: &mut HashMap<String, Option<String>>,
+    dois: &[String],
+    mut hits: HashMap<String, String>,
+    retry_individually: &HashSet<String>,
+) {
+    for doi in dois {
+        if let Some(abs) = hits.remove(doi) {
+            cache.insert(doi.clone(), Some(abs));
+        } else if !retry_individually.contains(doi) {
+            cache.insert(doi.clone(), None);
+        }
+    }
+}
+
 impl Enricher {
     pub fn new(secrets: Secrets) -> Self {
         let client = reqwest::Client::builder()
@@ -496,21 +621,6 @@ impl Enricher {
         }
     }
 
-    /// Try APIs first, then static publisher pages.
-    pub async fn enrich(&self, paper: &Paper) -> Result<EnrichResult> {
-        if let Some(doi) = &paper.doi {
-            if let Some(abs) = self.api_by_doi(doi).await? {
-                return Ok(EnrichResult::Found(abs));
-            }
-        }
-        if let Some(url) = &paper.url {
-            if let Some(abs) = self.api_by_source_url(url).await? {
-                return Ok(EnrichResult::Found(abs));
-            }
-        }
-        self.fallback_enrich(paper).await
-    }
-
     pub async fn enrich_many(
         &mut self,
         inputs: Vec<Paper>,
@@ -521,7 +631,7 @@ impl Enricher {
         let doi_cache = &self.doi_cache;
         let enricher = &*self;
         stream::iter(inputs.into_iter().map(|paper| async move {
-            let doi_batch_tried = paper
+            let doi_prefetch_complete = paper
                 .doi
                 .as_deref()
                 .and_then(normalized_doi)
@@ -530,7 +640,11 @@ impl Enricher {
                 .or_else(|| cached_openreview_abstract(openreview_cache, &paper))
             {
                 Some(abs) => Ok(EnrichResult::Found(abs)),
-                None => enricher.enrich_after_batch(&paper, doi_batch_tried).await,
+                None => {
+                    enricher
+                        .enrich_after_prefetch(&paper, doi_prefetch_complete)
+                        .await
+                }
             };
             (paper, result)
         }))
@@ -568,22 +682,29 @@ impl Enricher {
     async fn prefetch_doi_batches(&mut self, inputs: &[Paper]) {
         let mut needed = Vec::new();
         let mut seen = HashSet::new();
+        let mut expected_titles = HashMap::new();
         for paper in inputs {
             let Some(doi) = paper.doi.as_deref().and_then(normalized_doi) else {
                 continue;
             };
+            expected_titles
+                .entry(doi.clone())
+                .or_insert_with(|| paper.title.clone());
             if !self.doi_cache.contains_key(&doi) && seen.insert(doi.clone()) {
                 needed.push(doi);
             }
         }
 
-        for chunk in needed.chunks(DOI_BATCH_SIZE) {
-            let mut batch_failed = false;
-            let mut hits = match self.semantic_scholar_doi_abstracts(chunk).await {
+        for chunk in needed.chunks(SEMANTIC_SCHOLAR_BATCH_SIZE) {
+            let mut retry_individually = HashSet::new();
+            let mut hits = match self
+                .semantic_scholar_doi_abstracts(chunk, &expected_titles)
+                .await
+            {
                 Ok(hits) => hits,
                 Err(e) => {
-                    batch_failed = true;
                     tracing::warn!("Semantic Scholar DOI batch lookup failed: {e}");
+                    retry_individually.extend(chunk.iter().cloned());
                     HashMap::new()
                 }
             };
@@ -592,45 +713,31 @@ impl Enricher {
                 .filter(|doi| !hits.contains_key(*doi))
                 .cloned()
                 .collect::<Vec<_>>();
-            if !missing.is_empty() {
-                match self.openalex_doi_abstracts(&missing).await {
+            for missing in missing.chunks(OPENALEX_BATCH_SIZE) {
+                match self.openalex_doi_abstracts(missing, &expected_titles).await {
                     Ok(openalex_hits) => hits.extend(openalex_hits),
                     Err(e) => {
-                        batch_failed = true;
                         tracing::warn!("OpenAlex DOI batch lookup failed: {e}");
+                        retry_individually.extend(missing.iter().cloned());
                     }
                 }
             }
-            for doi in chunk {
-                match hits.remove(doi) {
-                    Some(abs) => {
-                        self.doi_cache.insert(doi.clone(), Some(abs));
-                    }
-                    None if !batch_failed => {
-                        self.doi_cache.insert(doi.clone(), None);
-                    }
-                    None => {}
-                }
-            }
+            store_doi_batch_results(&mut self.doi_cache, chunk, hits, &retry_individually);
         }
     }
 
-    async fn enrich_after_batch(
+    async fn enrich_after_prefetch(
         &self,
         paper: &Paper,
-        doi_batch_tried: bool,
+        doi_prefetch_complete: bool,
     ) -> Result<EnrichResult> {
-        if !doi_batch_tried {
-            if let Some(doi) = &paper.doi {
-                if let Some(abs) = self.api_by_doi(doi).await? {
-                    return Ok(EnrichResult::Found(abs));
-                }
-            }
-        }
-        if let Some(url) = &paper.url {
-            if let Some(abs) = self.api_by_source_url(url).await? {
+        if !doi_prefetch_complete {
+            if let Some(abs) = self.api_by_doi(paper).await? {
                 return Ok(EnrichResult::Found(abs));
             }
+        }
+        if let Some(abs) = self.openreview_api_abstract(paper).await {
+            return Ok(EnrichResult::Found(abs));
         }
         self.fallback_enrich(paper).await
     }
@@ -638,55 +745,57 @@ impl Enricher {
     async fn fallback_enrich(&self, paper: &Paper) -> Result<EnrichResult> {
         let source = paper_source(paper);
         let mut static_miss = None;
-        if source.is_some_and(|source| source != AbstractSource::Openreview) {
-            if let Some(url) = &paper.url {
-                match self.static_scrape(url, source).await? {
-                    EnrichResult::Found(abs) => return Ok(EnrichResult::Found(abs)),
-                    EnrichResult::Missing(reason) => {
-                        static_miss = Some(reason);
-                    }
+        if source.is_some_and(|source| source != AbstractSource::Openreview) && paper.url.is_some()
+        {
+            match self.static_scrape(paper, source).await? {
+                EnrichResult::Found(abs) => return Ok(EnrichResult::Found(abs)),
+                EnrichResult::Missing(reason) => {
+                    static_miss = Some(reason);
                 }
             }
         }
 
-        if let Some(abs) = self.api_by_title(paper).await? {
-            return Ok(EnrichResult::Found(abs));
+        if paper.doi.as_deref().and_then(normalized_doi).is_none() {
+            if let Some(abs) = self.api_by_title(paper).await? {
+                return Ok(EnrichResult::Found(abs));
+            }
         }
         if let Some(reason) = static_miss {
             return Ok(EnrichResult::Missing(reason));
         }
-        if let Some(url) = &paper.url {
-            return self.static_scrape(url, source).await;
+        if paper.url.is_some() {
+            return self.static_scrape(paper, source).await;
         }
         Ok(EnrichResult::Missing(
             "API metadata lookup missed and paper has no URL".into(),
         ))
     }
 
-    async fn api_by_doi(&self, doi: &str) -> Result<Option<String>> {
+    async fn api_by_doi(&self, paper: &Paper) -> Result<Option<String>> {
+        let Some(doi) = paper.doi.as_deref().and_then(normalized_doi) else {
+            return Ok(None);
+        };
+        let s2 = format!(
+            "https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,abstract"
+        );
         if let Some(abs) = self
-            .fetch_openalex_json(&format!("https://api.openalex.org/works/doi:{doi}"), &[])
+            .fetch_semantic_scholar_json(self.client.get(&s2))
             .await
             .ok()
-            .and_then(|json| abstract_from_openalex(&json))
+            .filter(|json| json_title_matches(json, &paper.title))
+            .and_then(|json| abstract_from_semantic_scholar(&json))
+            .and_then(|abs| usable_abstract_for_title(abs, &paper.title))
         {
             return Ok(Some(abs));
         }
 
-        let s2 =
-            format!("https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=abstract");
-        let s2_req = {
-            let req = self.client.get(&s2);
-            match &self.secrets.semantic_scholar_key {
-                Some(key) => req.header("x-api-key", key),
-                None => req,
-            }
-        };
         if let Some(abs) = self
-            .fetch_json(s2_req, RateLimitRetry::Disabled)
+            .fetch_openalex_json(&format!("https://api.openalex.org/works/doi:{doi}"), &[])
             .await
             .ok()
-            .and_then(|json| abstract_from_semantic_scholar(&json))
+            .filter(|json| json_title_matches(json, &paper.title))
+            .and_then(|json| abstract_from_openalex(&json))
+            .and_then(|abs| usable_abstract_for_title(abs, &paper.title))
         {
             return Ok(Some(abs));
         }
@@ -698,10 +807,17 @@ impl Enricher {
             .fetch_json(cr, RateLimitRetry::Enabled)
             .await
             .ok()
-            .and_then(|json| json.get("message").and_then(abstract_from_crossref)))
+            .and_then(|json| json.get("message").cloned())
+            .filter(|message| crossref_title_matches(message, &paper.title))
+            .and_then(|message| abstract_from_crossref(&message))
+            .and_then(|abs| usable_abstract_for_title(abs, &paper.title)))
     }
 
-    async fn openalex_doi_abstracts(&self, dois: &[String]) -> Result<HashMap<String, String>> {
+    async fn openalex_doi_abstracts(
+        &self,
+        dois: &[String],
+        expected_titles: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>> {
         let filter = format!("doi:{}", dois.join("|"));
         let per_page = dois.len().to_string();
         let json = self
@@ -711,12 +827,13 @@ impl Enricher {
             )
             .await
             .map_err(crate::Error::Other)?;
-        Ok(abstracts_from_openalex_works(&json, dois))
+        Ok(abstracts_from_openalex_works(&json, expected_titles))
     }
 
     async fn semantic_scholar_doi_abstracts(
         &self,
         dois: &[String],
+        expected_titles: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>> {
         let ids = dois
             .iter()
@@ -725,17 +842,16 @@ impl Enricher {
         let req = self
             .client
             .post("https://api.semanticscholar.org/graph/v1/paper/batch")
-            .query(&[("fields", "externalIds,abstract")])
+            .query(&[("fields", "externalIds,title,abstract")])
             .json(&serde_json::json!({ "ids": ids }));
-        let req = match &self.secrets.semantic_scholar_key {
-            Some(key) => req.header("x-api-key", key),
-            None => req,
-        };
         let json = self
-            .fetch_json(req, RateLimitRetry::Disabled)
+            .fetch_semantic_scholar_json(req)
             .await
             .map_err(crate::Error::Other)?;
-        Ok(abstracts_from_semantic_scholar_batch(&json, dois))
+        Ok(abstracts_from_semantic_scholar_batch(
+            &json,
+            expected_titles,
+        ))
     }
 
     async fn api_by_title(&self, paper: &Paper) -> Result<Option<String>> {
@@ -747,32 +863,32 @@ impl Enricher {
             .await
             .ok()
             .and_then(|json| abstract_from_openalex_title_search(&json, paper))
+            .and_then(|abs| usable_abstract_for_title(abs, &paper.title))
         {
             return Ok(Some(abs));
         }
 
-        let s2_req = {
-            let req = self
-                .client
-                .get("https://api.semanticscholar.org/graph/v1/paper/search/match")
-                .query(&[
-                    ("query", paper.title.as_str()),
-                    ("limit", "5"),
-                    ("fields", "title,year,authors,abstract"),
-                ]);
-            match &self.secrets.semantic_scholar_key {
-                Some(key) => req.header("x-api-key", key),
-                None => req,
-            }
-        };
+        let s2_req = self
+            .client
+            .get("https://api.semanticscholar.org/graph/v1/paper/search/match")
+            .query(&[
+                ("query", paper.title.as_str()),
+                ("limit", "5"),
+                ("fields", "title,year,authors,abstract"),
+            ]);
         Ok(self
-            .fetch_json(s2_req, RateLimitRetry::Disabled)
+            .fetch_semantic_scholar_json(s2_req)
             .await
             .ok()
-            .and_then(|json| abstract_from_semantic_scholar_title_search(&json, paper)))
+            .and_then(|json| abstract_from_semantic_scholar_title_search(&json, paper))
+            .and_then(|abs| usable_abstract_for_title(abs, &paper.title)))
     }
 
-    async fn openreview_api_abstract(&self, url: &str) -> Option<String> {
+    async fn openreview_api_abstract(&self, paper: &Paper) -> Option<String> {
+        if paper_source(paper) != Some(AbstractSource::Openreview) {
+            return None;
+        }
+        let url = paper.url.as_deref()?;
         let forum_id = openreview_forum_id(url)?;
         for base in [
             "https://api2.openreview.net/notes",
@@ -788,6 +904,7 @@ impl Enricher {
             if let Some(abs) = abstracts_from_openreview_notes(&json)
                 .get(&forum_id)
                 .cloned()
+                .and_then(|abs| usable_abstract_for_title(abs, &paper.title))
             {
                 return Some(abs);
             }
@@ -889,15 +1006,6 @@ impl Enricher {
             .map(str::to_string)
     }
 
-    async fn api_by_source_url(&self, url: &str) -> Result<Option<String>> {
-        if source_from_paper_url(url) == Some(AbstractSource::Openreview) {
-            if let Some(abs) = self.openreview_api_abstract(url).await {
-                return Ok(Some(abs));
-            }
-        }
-        Ok(None)
-    }
-
     async fn fetch_openalex_json(
         &self,
         url: &str,
@@ -911,10 +1019,28 @@ impl Enricher {
         match self.fetch_json(req, RateLimitRetry::Disabled).await {
             Err(reason)
                 if self.secrets.openalex_api_key.is_some()
-                    && should_retry_openalex_without_key(&reason) =>
+                    && should_retry_without_api_key(&reason) =>
             {
                 self.fetch_json(plain_req(), RateLimitRetry::Disabled).await
             }
+            other => other,
+        }
+    }
+
+    async fn fetch_semantic_scholar_json(
+        &self,
+        plain_req: reqwest::RequestBuilder,
+    ) -> std::result::Result<Value, String> {
+        let Some(key) = &self.secrets.semantic_scholar_key else {
+            return self.fetch_json(plain_req, RateLimitRetry::Enabled).await;
+        };
+        let fallback = plain_req.try_clone();
+        let req = plain_req.header("x-api-key", key);
+        match self.fetch_json(req, RateLimitRetry::Enabled).await {
+            Err(reason) if should_retry_without_api_key(&reason) => match fallback {
+                Some(req) => self.fetch_json(req, RateLimitRetry::Enabled).await,
+                None => Err(reason),
+            },
             other => other,
         }
     }
@@ -924,20 +1050,14 @@ impl Enricher {
         req: reqwest::RequestBuilder,
         retry_rate_limits: RateLimitRetry,
     ) -> std::result::Result<Value, String> {
-        let retry_req = req.try_clone();
-        let mut resp = match req.send().await {
-            Ok(resp) => resp,
-            Err(_) => return Err("request failed".into()),
-        };
+        let rate_limit_req = req.try_clone();
+        let mut resp = self.send(req).await?;
         if matches!(retry_rate_limits, RateLimitRetry::Enabled)
             && resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
         {
-            if let Some(req) = retry_req {
+            if let Some(req) = rate_limit_req {
                 tokio::time::sleep(rate_limit_delay(&resp)).await;
-                resp = match req.send().await {
-                    Ok(resp) => resp,
-                    Err(_) => return Err("request failed after rate limit".into()),
-                };
+                resp = self.send(req).await?;
             }
         }
         if !resp.status().is_success() {
@@ -949,21 +1069,40 @@ impl Enricher {
         serde_json::from_slice::<Value>(&bytes).map_err(|_| "invalid JSON response".into())
     }
 
+    async fn send(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> std::result::Result<reqwest::Response, String> {
+        let retry_req = req.try_clone();
+        match req.send().await {
+            Ok(resp) => Ok(resp),
+            Err(_) => {
+                let Some(req) = retry_req else {
+                    return Err("request failed".into());
+                };
+                tokio::time::sleep(TRANSIENT_RETRY_DELAY).await;
+                req.send()
+                    .await
+                    .map_err(|_| "request failed after retry".into())
+            }
+        }
+    }
+
     async fn static_scrape(
         &self,
-        url: &str,
+        paper: &Paper,
         source: Option<AbstractSource>,
     ) -> Result<EnrichResult> {
-        let Some(mut url) = allowed_static_url(url).await else {
-            return Ok(EnrichResult::Missing(
-                "URL rejected by static scraper".into(),
-            ));
+        let url = paper.url.as_deref().expect("paper URL checked by caller");
+        let mut url = match allowed_static_url(url).await {
+            Ok(url) => url,
+            Err(reason) => return Ok(EnrichResult::Missing(reason.into())),
         };
 
         for _ in 0..=MAX_STATIC_REDIRECTS {
-            let resp = match self.client.get(url.clone()).send().await {
+            let resp = match self.send(self.client.get(url.clone())).await {
                 Ok(resp) => resp,
-                Err(_) => return Ok(EnrichResult::Missing("static scrape request failed".into())),
+                Err(reason) => return Ok(EnrichResult::Missing(format!("static scrape {reason}"))),
             };
             if resp.status().is_redirection() {
                 let Some(next_url) = redirect_url(&url, &resp) else {
@@ -971,8 +1110,9 @@ impl Enricher {
                         "redirect without valid location".into(),
                     ));
                 };
-                let Some(next_url) = allowed_static_url(next_url.as_str()).await else {
-                    return Ok(EnrichResult::Missing("redirect URL rejected".into()));
+                let next_url = match allowed_static_url(next_url.as_str()).await {
+                    Ok(url) => url,
+                    Err(reason) => return Ok(EnrichResult::Missing(reason.into())),
                 };
                 url = next_url;
                 continue;
@@ -988,11 +1128,21 @@ impl Enricher {
                     "static page too large or unreadable".into(),
                 ));
             };
+            if !static_page_title_matches(&html, &paper.title) {
+                return Ok(EnrichResult::Missing(
+                    "static page title did not match paper".into(),
+                ));
+            }
             let source = source_from_static_url(&url).or(source);
-            return Ok(match extract_abstract_html(&html, source) {
-                Some(abs) => EnrichResult::Found(abs),
-                None => EnrichResult::Missing("static page had no extractable abstract".into()),
-            });
+            return Ok(
+                match abstract_candidates(&html, source)
+                    .into_iter()
+                    .find_map(|abs| usable_abstract_for_title(abs, &paper.title))
+                {
+                    Some(abs) => EnrichResult::Found(abs),
+                    None => EnrichResult::Missing("static page had no extractable abstract".into()),
+                },
+            );
         }
 
         Ok(EnrichResult::Missing("too many redirects".into()))
@@ -1005,14 +1155,17 @@ fn source_from_static_url(url: &Url) -> Option<AbstractSource> {
         "aclanthology.org" | "www.aclanthology.org" => Some(AbstractSource::Acl),
         "dl.acm.org" => Some(AbstractSource::Acm),
         "ieeexplore.ieee.org" => Some(AbstractSource::Ieee),
+        "ijcai.org" | "www.ijcai.org" => Some(AbstractSource::Ijcai),
         "openaccess.thecvf.com" => Some(AbstractSource::Cvf),
         "openreview.net" | "www.openreview.net" => Some(AbstractSource::Openreview),
         "proceedings.mlr.press" => Some(AbstractSource::Pmlr),
-        "neurips.cc" => Some(AbstractSource::Neurips),
+        "neurips.cc" | "nips.cc" => Some(AbstractSource::Neurips),
         "link.springer.com" => Some(AbstractSource::Springer),
         "ndss-symposium.org" | "www.ndss-symposium.org" => Some(AbstractSource::Ndss),
         "usenix.org" | "www.usenix.org" => Some(AbstractSource::Usenix),
-        _ if host.ends_with(".neurips.cc") => Some(AbstractSource::Neurips),
+        _ if host.ends_with(".neurips.cc") || host.ends_with(".nips.cc") => {
+            Some(AbstractSource::Neurips)
+        }
         _ => None,
     }
 }
@@ -1032,6 +1185,7 @@ fn source_from_doi_url(url: &Url) -> Option<AbstractSource> {
         doi if doi.starts_with("10.1145/") => Some(AbstractSource::Acm),
         doi if doi.starts_with("10.18653/") => Some(AbstractSource::Acl),
         doi if doi.starts_with("10.1109/") => Some(AbstractSource::Ieee),
+        doi if doi.starts_with("10.24963/") => Some(AbstractSource::Ijcai),
         doi if doi.starts_with("10.1007/") => Some(AbstractSource::Springer),
         doi if doi.starts_with("10.14722/") => Some(AbstractSource::Ndss),
         _ => None,
@@ -1054,6 +1208,7 @@ fn cached_openreview_abstract(
         .get(&(paper.venue.clone(), paper.year))?
         .get(&forum_id)
         .cloned()
+        .and_then(|abs| usable_abstract_for_title(abs, &paper.title))
 }
 
 fn cached_doi_abstract(cache: &HashMap<String, Option<String>>, paper: &Paper) -> Option<String> {
@@ -1071,7 +1226,7 @@ fn http_status_reason(prefix: &str, status: reqwest::StatusCode) -> String {
     format!("{prefix} {} ({label})", status.as_u16())
 }
 
-fn should_retry_openalex_without_key(reason: &str) -> bool {
+fn should_retry_without_api_key(reason: &str) -> bool {
     reason.starts_with("HTTP 401")
         || reason.starts_with("HTTP 403")
         || reason.starts_with("HTTP 429")
@@ -1089,22 +1244,36 @@ fn header_seconds(headers: &header::HeaderMap, name: impl header::AsHeaderName) 
     headers.get(name)?.to_str().ok()?.parse().ok()
 }
 
-async fn allowed_static_url(raw: &str) -> Option<Url> {
-    let url = parse_static_url(raw)?;
-    let host = url.host_str()?;
-    let port = url.port_or_known_default()?;
+async fn allowed_static_url(raw: &str) -> std::result::Result<Url, &'static str> {
+    let url = parse_static_url(raw).ok_or("URL rejected by static scraper")?;
+    let host = url.host_str().ok_or("URL rejected by static scraper")?;
+    let port = url
+        .port_or_known_default()
+        .ok_or("URL rejected by static scraper")?;
     if let Some(ip) = parse_host_ip(host) {
-        return is_public_ip(ip).then_some(url);
+        return is_public_ip(ip)
+            .then_some(url)
+            .ok_or("URL rejected by static scraper");
     }
-    let addrs = tokio::net::lookup_host((host, port)).await.ok()?;
+    let addrs = match tokio::net::lookup_host((host, port)).await {
+        Ok(addrs) => addrs,
+        Err(_) => {
+            tokio::time::sleep(TRANSIENT_RETRY_DELAY).await;
+            tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|_| "static URL DNS lookup failed")?
+        }
+    };
     let mut has_addr = false;
     for addr in addrs {
         has_addr = true;
         if !is_public_ip(addr.ip()) {
-            return None;
+            return Err("URL rejected by static scraper");
         }
     }
-    has_addr.then_some(url)
+    has_addr
+        .then_some(url)
+        .ok_or("static URL DNS lookup returned no addresses")
 }
 
 fn parse_static_url(raw: &str) -> Option<Url> {
@@ -1221,6 +1390,16 @@ mod tests {
         }
     }
 
+    fn fixture_abstract(prefix: &str) -> String {
+        format!(
+            "{prefix} This additional sentence provides enough detail to look like a real paper abstract. It also states the result and its significance."
+        )
+    }
+
+    fn extract_abstract_html(html: &str, source: Option<AbstractSource>) -> Option<String> {
+        abstract_candidates(html, source).into_iter().next()
+    }
+
     #[test]
     fn http_status_reason_labels_blocked_and_rate_limited() {
         assert_eq!(
@@ -1234,12 +1413,19 @@ mod tests {
     }
 
     #[test]
-    fn openalex_key_retry_is_limited_to_auth_or_rate_statuses() {
-        assert!(should_retry_openalex_without_key("HTTP 429 (rate limited)"));
-        assert!(should_retry_openalex_without_key("HTTP 403 (blocked)"));
-        assert!(!should_retry_openalex_without_key(
-            "HTTP 404 (request failed)"
-        ));
+    fn api_key_fallback_is_limited_to_auth_or_rate_statuses() {
+        assert!(should_retry_without_api_key("HTTP 403 (blocked)"));
+        assert!(should_retry_without_api_key("HTTP 429 (rate limited)"));
+        assert!(!should_retry_without_api_key("HTTP 404 (request failed)"));
+    }
+
+    #[test]
+    fn numeric_dois_are_normalized() {
+        assert_eq!(
+            normalized_doi("https://doi.org/10.1145/3611643.3613892").as_deref(),
+            Some("10.1145/3611643.3613892")
+        );
+        assert_eq!(normalized_doi(" "), None);
     }
 
     #[test]
@@ -1264,47 +1450,144 @@ mod tests {
 
     #[test]
     fn openalex_plain_abstract() {
-        let work = json!({ "abstract": "  direct text  " });
+        let work = json!({ "abstract": "Direct text." });
         assert_eq!(
             abstract_from_openalex(&work).as_deref(),
-            Some("direct text")
+            Some("Direct text.")
         );
-        let citation = json!({
-            "abstract": "Alice Example. Proceedings of the 2024 Conference. 2024."
-        });
-        assert!(abstract_from_openalex(&citation).is_none());
-        let findings = json!({
-            "abstract": "Alice Example. Findings of the Association for Computational Linguistics: EMNLP 2024. 2024."
-        });
-        assert!(abstract_from_openalex(&findings).is_none());
     }
 
     #[test]
-    fn doi_batch_helpers_require_exact_doi_match() {
-        let dois = vec!["10.1000/right".to_string()];
+    fn rejects_observed_placeholder_abstracts() {
+        for placeholder in [
+            "Abstract",
+            "TODO",
+            "International audience",
+            "peer reviewed",
+            "Challenge Report",
+            "No abstract available.",
+            "status: Published",
+            "Warning: This paper contains examples of language that some people may find offensive.",
+            "Explain this framework to me in detail and in chronological order. I am an aspiring consultant and I need to know this.",
+            "Explain this framework to me in detail and in chronological order.I am an aspiring consultant and I need to know this.",
+            "Promoting openness in scientific communication and the peer-review process",
+            "Promoting openness in scientific communication and the peer-review process | OpenReview",
+            "Electronic proceedings of IJCAI 2024 with additional publication information",
+            "Paper presented at a workshop with enough bibliographic details to exceed the minimum accepted abstract length by a wide margin.",
+            "This repository contains code, datasets, devices, and usage instructions for reproducing the paper's experiments and released models.",
+            "Alice Example. A paper title. In: Findings of the Association for Computational Linguistics: EMNLP 2023. 2023: 1-10.",
+            "https:",
+            "https://doi.org/10.18653/v1/2023.acl-long.361",
+            "http://10.0.72.221/v1/2023.emnlp-main.194",
+        ] {
+            assert!(abstract_text(placeholder).is_none(), "{placeholder}");
+        }
+    }
+
+    #[test]
+    fn sanitizes_and_rejects_observed_bad_abstracts() {
+        let abs = fixture_abstract("Clean abstract.");
+        assert_eq!(
+            abstract_text(format!("{abs} CCS CONCEPTS • Security and privacy")).as_deref(),
+            Some(abs.as_str())
+        );
+        assert_eq!(
+            abstract_text(format!("{abs} Ccs Concepts• General and reference")).as_deref(),
+            Some(abs.as_str())
+        );
+        assert_eq!(
+            abstract_text(format!(
+                "{abs} © 2024 Association for Computational Linguistics."
+            ))
+            .as_deref(),
+            Some(abs.as_str())
+        );
+        assert!(
+            abstract_text(format!("{abs} Copy to Clipboard Download Related Material")).is_none()
+        );
+        assert_eq!(
+            abstract_text(format!("<p>{abs}</p>")).as_deref(),
+            Some(abs.as_str())
+        );
+        assert!(abstract_text(format!("{abs}...")).is_none());
+        assert!(abstract_text("x".repeat(MAX_ABSTRACT_CHARS + 1)).is_none());
+        assert!(abstract_text(format!("{abs} invalid � character")).is_none());
+        let short = "We introduce a compact benchmark and show that it improves accuracy on three evaluation datasets.";
+        assert_eq!(abstract_text(short).as_deref(), Some(short));
+        assert!(abstract_text(short.trim_end_matches('.')).is_none());
+        assert!(usable_abstract_for_title(
+            "A Paper: With Punctuation.".into(),
+            "A Paper - With Punctuation"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn abstract_length_limits_count_characters() {
+        assert!(abstract_text(format!("{}.", "界".repeat(30))).is_none());
+        assert!(abstract_text(format!("{}.", "界".repeat(2_000))).is_some());
+    }
+
+    #[test]
+    fn doi_batch_helpers_require_matching_doi_and_title() {
+        let expected = HashMap::from([("10.1000/right".to_string(), "Expected Title".to_string())]);
+        let right = fixture_abstract("Right abstract.");
+        let wrong = fixture_abstract("Wrong abstract.");
         let openalex = json!({
             "results": [
-                {"doi": "https://doi.org/10.1000/wrong", "abstract": "wrong"},
-                {"doi": "https://doi.org/10.1000/right", "abstract": "right"}
+                {"doi": "https://doi.org/10.1000/wrong", "title": "Expected Title", "abstract": wrong},
+                {"doi": "https://doi.org/10.1000/right", "title": "Wrong Title", "abstract": wrong},
+                {"doi": "https://doi.org/10.1000/right", "title": "Expected Title.", "abstract": right}
             ]
         });
         assert_eq!(
-            abstracts_from_openalex_works(&openalex, &dois)
+            abstracts_from_openalex_works(&openalex, &expected)
                 .get("10.1000/right")
                 .map(String::as_str),
-            Some("right")
+            Some(right.as_str())
         );
 
         let s2 = json!([
-            {"externalIds": {"DOI": "10.1000/wrong"}, "abstract": "wrong"},
-            {"externalIds": {"DOI": "10.1000/right"}, "abstract": "right"}
+            {"externalIds": {"DOI": "10.1000/wrong"}, "title": "Expected Title", "abstract": wrong},
+            {"externalIds": {"DOI": "10.1000/right"}, "title": "Wrong Title", "abstract": wrong},
+            {"externalIds": {"DOI": "10.1000/right"}, "title": "Expected Title.", "abstract": right}
         ]);
         assert_eq!(
-            abstracts_from_semantic_scholar_batch(&s2, &dois)
+            abstracts_from_semantic_scholar_batch(&s2, &expected)
                 .get("10.1000/right")
                 .map(String::as_str),
-            Some("right")
+            Some(right.as_str())
         );
+    }
+
+    #[test]
+    fn failed_doi_batches_remain_retryable() {
+        let dois = ["hit", "miss", "retry"].map(str::to_string);
+        let mut cache = HashMap::new();
+        store_doi_batch_results(
+            &mut cache,
+            &dois,
+            HashMap::from([("hit".into(), "abstract".into())]),
+            &HashSet::from(["retry".into()]),
+        );
+
+        assert_eq!(cache.get("hit"), Some(&Some("abstract".into())));
+        assert_eq!(cache.get("miss"), Some(&None));
+        assert!(!cache.contains_key("retry"));
+    }
+
+    #[test]
+    fn static_page_citation_title_must_match() {
+        let expected = "A Paper: With Punctuation.";
+        assert!(static_page_title_matches(
+            r#"<meta name="citation_title" content="A Paper - With Punctuation">"#,
+            expected
+        ));
+        assert!(!static_page_title_matches(
+            r#"<meta name="citation_title" content="Another Paper">"#,
+            expected
+        ));
+        assert!(static_page_title_matches("<html></html>", expected));
     }
 
     #[test]
@@ -1315,13 +1598,13 @@ mod tests {
                     "title": "TD-MPC2: Scalable, Robust World Models for Continuous Control",
                     "publication_year": 2024,
                     "authorships": [{"author": {"display_name": "Wrong Author"}}],
-                    "abstract": "wrong author"
+                    "abstract": "Wrong author abstract."
                 },
                 {
                     "title": "TD-MPC2: Scalable, Robust World Models for Continuous Control",
                     "publication_year": 2023,
                     "authorships": [{"author": {"display_name": "Nicklas Hansen"}}],
-                    "abstract": "right"
+                    "abstract": "Right abstract."
                 }
             ]
         });
@@ -1331,7 +1614,7 @@ mod tests {
                 &paper("TD-MPC2: Scalable, Robust World Models for Continuous Control.")
             )
             .as_deref(),
-            Some("right")
+            Some("Right abstract.")
         );
         assert_eq!(
             abstract_from_openalex_title_search(&results, &paper("Different Title")),
@@ -1347,13 +1630,13 @@ mod tests {
                     "title": "TD-MPC2: Scalable, Robust World Models for Continuous Control",
                     "year": 2024,
                     "authors": [{"name": "Wrong Author"}],
-                    "abstract": "wrong author"
+                    "abstract": "Wrong author abstract."
                 },
                 {
                     "title": "TD-MPC2: Scalable, Robust World Models for Continuous Control",
                     "year": 2023,
                     "authors": [{"name": "Nicklas Hansen"}],
-                    "abstract": "right"
+                    "abstract": "Right abstract."
                 }
             ]
         });
@@ -1363,21 +1646,18 @@ mod tests {
                 &paper("TD-MPC2: Scalable, Robust World Models for Continuous Control.")
             )
             .as_deref(),
-            Some("right")
+            Some("Right abstract.")
         );
     }
 
     #[test]
     fn semantic_scholar_abstract() {
         assert_eq!(
-            abstract_from_semantic_scholar(&json!({"abstract": "hello"})).as_deref(),
-            Some("hello")
+            abstract_from_semantic_scholar(&json!({"abstract": "Semantic Scholar abstract."}))
+                .as_deref(),
+            Some("Semantic Scholar abstract.")
         );
         assert!(abstract_from_semantic_scholar(&json!({"abstract": null})).is_none());
-        assert!(abstract_from_semantic_scholar(
-            &json!({"abstract": "Alice Example. Proceedings of the 2024 Conference. 2024."})
-        )
-        .is_none());
     }
 
     #[test]
@@ -1409,10 +1689,11 @@ mod tests {
 
     #[test]
     fn cached_openreview_abstract_uses_forum_id() {
+        let abs = fixture_abstract("Cached abstract.");
         let mut cache = HashMap::new();
         cache.insert(
             ("ICLR".to_string(), 2024),
-            HashMap::from([("Oxh5CstDJU".to_string(), "cached abstract".to_string())]),
+            HashMap::from([("Oxh5CstDJU".to_string(), abs.clone())]),
         );
         assert_eq!(
             cached_openreview_abstract(
@@ -1420,7 +1701,7 @@ mod tests {
                 &paper("TD-MPC2: Scalable, Robust World Models for Continuous Control.")
             )
             .as_deref(),
-            Some("cached abstract")
+            Some(abs.as_str())
         );
         let mut pmlr = paper("TD-MPC2: Scalable, Robust World Models for Continuous Control.");
         pmlr.url = Some("https://proceedings.mlr.press/v1/example.html".into());
@@ -1429,10 +1710,11 @@ mod tests {
 
     #[tokio::test]
     async fn enrich_many_uses_cached_openreview_abstracts() {
+        let abs = fixture_abstract("Cached abstract.");
         let mut enricher = Enricher::new(Secrets::default());
         enricher.openreview_cache.insert(
             ("ICLR".to_string(), 2024),
-            HashMap::from([("Oxh5CstDJU".to_string(), "cached abstract".to_string())]),
+            HashMap::from([("Oxh5CstDJU".to_string(), abs.clone())]),
         );
 
         let results = enricher
@@ -1446,7 +1728,7 @@ mod tests {
 
         let (_, result) = results.into_iter().next().unwrap();
         match result.unwrap() {
-            EnrichResult::Found(abs) => assert_eq!(abs, "cached abstract"),
+            EnrichResult::Found(found) => assert_eq!(found, abs),
             EnrichResult::Missing(reason) => panic!("expected cached abstract, got {reason}"),
         }
     }
@@ -1475,6 +1757,16 @@ mod tests {
             Some(AbstractSource::Acl)
         );
         assert_eq!(
+            source_from_static_url(
+                &Url::parse("https://www.ijcai.org/proceedings/2024/1").unwrap()
+            ),
+            Some(AbstractSource::Ijcai)
+        );
+        assert_eq!(
+            source_from_static_url(&Url::parse("https://papers.nips.cc/paper/1").unwrap()),
+            Some(AbstractSource::Neurips)
+        );
+        assert_eq!(
             source_from_static_url(&Url::parse("https://example.com/paper").unwrap()),
             None
         );
@@ -1501,6 +1793,10 @@ mod tests {
         assert_eq!(
             source_from_paper_url("https://doi.org/10.1109/RAID67961.2025.00012"),
             Some(AbstractSource::Ieee)
+        );
+        assert_eq!(
+            source_from_paper_url("https://doi.org/10.24963/ijcai.2024/1"),
+            Some(AbstractSource::Ijcai)
         );
     }
 
@@ -1543,7 +1839,41 @@ mod tests {
         let html = r#"<html><head>
             <meta property="og:description" content="Alice. Proceedings of the 2024 Conference. 2024.">
         </head><body></body></html>"#;
-        assert!(extract_abstract_html(html, Some(AbstractSource::Acl)).is_none());
+        assert!(extract_abstract_html(html, Some(AbstractSource::Acl))
+            .and_then(|raw| usable_abstract_for_title(raw, "A paper title"))
+            .is_none());
+    }
+
+    #[test]
+    fn html_skips_unusable_candidates() {
+        let valid = fixture_abstract("Valid fallback.");
+        let html = format!(
+            r#"<html><head>
+                <meta name="citation_abstract" content="TODO">
+                <meta property="og:description" content="{valid}">
+            </head><body><div id="abstract">Abstract</div></body></html>"#
+        );
+        assert_eq!(
+            abstract_candidates(&html, Some(AbstractSource::Cvf))
+                .into_iter()
+                .find_map(|raw| usable_abstract_for_title(raw, "A paper title"))
+                .as_deref(),
+            Some(valid.as_str())
+        );
+    }
+
+    #[test]
+    fn html_ijcai_source_specific_selector() {
+        let html = r#"<div class="proceedings-detail">
+                <hr><div class="row">
+                    <div class="col-md-12">This is the IJCAI abstract.</div>
+                    <div class="col-md-12"><div class="keywords">Keywords: planning</div></div>
+                </div>
+            </div>"#;
+        assert_eq!(
+            extract_abstract_html(html, Some(AbstractSource::Ijcai)).as_deref(),
+            Some("This is the IJCAI abstract.")
+        );
     }
 
     #[test]
@@ -1583,12 +1913,15 @@ mod tests {
         let html = r#"<html><body>
             <section class="paper-section">
                 <h2 class="section-label">Abstract</h2>
-                <p class="paper-abstract"><p>NeurIPS abstract text.</p></p>
+                <p class="paper-abstract">
+                    This avoids <em>loss of plasticity</em>, and proposes
+                    <strong>DASH</strong>, a robust method.
+                </p>
             </section>
         </body></html>"#;
         assert_eq!(
             extract_abstract_html(html, Some(AbstractSource::Neurips)).as_deref(),
-            Some("NeurIPS abstract text.")
+            Some("This avoids loss of plasticity, and proposes DASH, a robust method.")
         );
     }
 
@@ -1633,14 +1966,6 @@ mod tests {
             extract_abstract_html(html, Some(AbstractSource::Openreview)).as_deref(),
             Some("ICLR virtual abstract text.")
         );
-    }
-
-    #[test]
-    fn html_rejects_openreview_boilerplate_description() {
-        let html = r#"<html><head>
-            <meta name="description" content="Promoting openness in scientific communication and the peer-review process">
-        </head></html>"#;
-        assert!(extract_abstract_html(html, Some(AbstractSource::Openreview)).is_none());
     }
 
     #[test]
@@ -1714,7 +2039,7 @@ mod tests {
 
     #[test]
     fn html_ignores_proceedings_boilerplate() {
-        assert!(non_empty_text("Electronic proceedings of IJCAI 2024").is_none());
+        assert!(abstract_text("Electronic proceedings of IJCAI 2024").is_none());
     }
 
     #[test]
@@ -1726,6 +2051,14 @@ mod tests {
         assert_eq!(
             non_empty_text("Abstract meaning representation is a graph.").as_deref(),
             Some("Abstract meaning representation is a graph.")
+        );
+        assert_eq!(
+            non_empty_text("Abstract Meaning Representation is a graph.").as_deref(),
+            Some("Abstract Meaning Representation is a graph.")
+        );
+        assert_eq!(
+            non_empty_text("Abstract We present a new method.").as_deref(),
+            Some("We present a new method.")
         );
     }
 

@@ -108,8 +108,7 @@ enum Command {
 
 /// Default number of concurrent abstract fetches.
 const DEFAULT_JOBS: usize = 8;
-const MIN_ENRICH_BATCH: usize = 64;
-const MAX_ENRICH_BATCH: usize = 512;
+const ENRICH_BATCH_SIZE: usize = 500;
 const ENRICH_PROGRESS_INTERVAL: usize = 500;
 
 #[derive(clap::Args)]
@@ -469,7 +468,6 @@ async fn enrich_abstracts(
     let pending = db.count_missing_abstracts(venue_ids, years)?;
     let total = limit.map_or(pending, |limit| limit.min(pending));
     let jobs = jobs.max(1);
-    let batch_size = enrich_batch_size(jobs);
     log_header("abstract enrichment");
     log_field("pending", format_args!("{pending} abstracts"));
     if !years.is_empty() {
@@ -491,7 +489,7 @@ async fn enrich_abstracts(
             venue_ids,
             years,
             after_id,
-            remaining.min(batch_size),
+            remaining.min(ENRICH_BATCH_SIZE),
         )?;
         let Some(next_after_id) = batch.last().map(|paper| paper.id) else {
             break;
@@ -571,11 +569,6 @@ fn format_year_ranges(years: &[query::YearRange]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn enrich_batch_size(jobs: usize) -> usize {
-    jobs.saturating_mul(4)
-        .clamp(MIN_ENRICH_BATCH, MAX_ENRICH_BATCH)
 }
 
 fn batch_venue_summary(inputs: &[Paper]) -> String {
