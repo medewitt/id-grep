@@ -100,12 +100,6 @@ struct UpdateArgs {
     /// Minimum year (overrides config default).
     #[arg(long)]
     since: Option<i32>,
-    /// Also fetch abstracts (slower; uses API keys, then static scrapers).
-    #[arg(long)]
-    abstracts: bool,
-    /// Concurrent abstract fetches (only with --abstracts).
-    #[arg(long, default_value_t = DEFAULT_JOBS)]
-    jobs: usize,
 }
 
 #[derive(clap::Args)]
@@ -363,17 +357,6 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
         anyhow::bail!("failed to fetch venue(s): {}", failed.join(", "));
     }
 
-    if args.abstracts {
-        log_blank();
-        enrich_abstracts(
-            &mut db,
-            &venue_ids,
-            &[query::YearRange::new(Some(min_year), None)?],
-            args.jobs,
-            None,
-        )
-        .await?;
-    }
     Ok(())
 }
 
@@ -573,6 +556,12 @@ mod tests {
             panic!("expected update command");
         };
         assert_eq!(args.bundle, vec!["se".to_string(), "ml".to_string()]);
+    }
+
+    #[test]
+    fn update_enrichment_flags_are_removed() {
+        assert!(Cli::try_parse_from(["sec-grep", "update", "--abstracts"]).is_err());
+        assert!(Cli::try_parse_from(["sec-grep", "update", "--jobs", "2"]).is_err());
     }
 
     #[test]

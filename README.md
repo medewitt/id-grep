@@ -170,7 +170,6 @@ Abstract enrichment is optional, cached, and best-effort. sec-grep uses paper
 DOIs and DBLP paper URLs to find abstracts.
 
 ```sh
-sec-grep update --abstracts
 sec-grep enrich --jobs 8
 ```
 
