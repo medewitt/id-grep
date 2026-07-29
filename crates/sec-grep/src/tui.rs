@@ -48,7 +48,7 @@ struct App {
     sort: SortMode,
     results: Vec<Paper>,
     window_start: usize,
-    total: Option<usize>,
+    total: usize,
     selected: usize,
     status: String,
 }
@@ -101,7 +101,7 @@ impl App {
             sort: SortMode::Year,
             results: Vec::new(),
             window_start: 0,
-            total: Some(0),
+            total: 0,
             selected: 0,
             status: String::new(),
         };
@@ -125,7 +125,7 @@ impl App {
                 return;
             }
         };
-        self.total = Some(total);
+        self.total = total;
         self.selected = 0;
         self.load_window_for_search(&search, page_size);
     }
@@ -149,21 +149,21 @@ impl App {
         let window_size = window_size(page_size);
         let window_start = result_window_start(self.selected, window_size, self.total);
         match self.fetch_window(search, window_start, window_size) {
-            Ok((mut rows, has_more)) => {
+            Ok(mut rows) => {
                 let mut window_start = window_start;
                 if rows.is_empty() && window_start > 0 {
-                    self.total = Some(window_start);
+                    self.total = window_start;
                     self.selected = self.selected.min(window_start.saturating_sub(1));
                     window_start = result_window_start(self.selected, window_size, self.total);
                     match self.fetch_window(search, window_start, window_size) {
-                        Ok((retry_rows, retry_has_more)) => {
+                        Ok(retry_rows) => {
                             rows = retry_rows;
-                            self.finish_window_load(window_start, rows, retry_has_more);
+                            self.finish_window_load(window_start, rows);
                         }
                         Err(e) => self.set_error(format!("db error: {e}")),
                     }
                 } else {
-                    self.finish_window_load(window_start, rows, has_more);
+                    self.finish_window_load(window_start, rows);
                 }
             }
             Err(e) => self.set_error(format!("db error: {e}")),
@@ -175,31 +175,17 @@ impl App {
         search: &Search,
         window_start: usize,
         window_size: usize,
-    ) -> CoreResult<(Vec<Paper>, bool)> {
+    ) -> CoreResult<Vec<Paper>> {
         let mut search = search.clone();
-        search.limit = Some(window_size + 1);
+        search.limit = Some(window_size);
         search.offset = Some(window_start);
-        let mut rows = self.db.search(&search)?;
-        let has_more = rows.len() > window_size;
-        if has_more {
-            rows.truncate(window_size);
-        }
-        Ok((rows, has_more))
+        self.db.search(&search)
     }
 
-    fn finish_window_load(&mut self, window_start: usize, rows: Vec<Paper>, has_more: bool) {
-        let loaded_len = rows.len();
-        let known_total = self.total;
+    fn finish_window_load(&mut self, window_start: usize, rows: Vec<Paper>) {
         self.results = rows;
         self.window_start = window_start;
-        self.total = if known_total.is_some() {
-            known_total
-        } else if has_more {
-            None
-        } else {
-            Some(window_start + loaded_len)
-        };
-        self.status = result_status(self.total, self.known_result_bound());
+        self.status = result_status(self.total);
     }
 
     fn ensure_visible_loaded(&mut self, page_size: usize) {
@@ -219,19 +205,13 @@ impl App {
     fn set_error(&mut self, status: String) {
         self.results.clear();
         self.window_start = 0;
-        self.total = Some(0);
+        self.total = 0;
         self.selected = 0;
         self.status = status;
     }
 
-    fn known_result_bound(&self) -> usize {
-        self.total
-            .unwrap_or_else(|| self.window_start + self.results.len())
-            .max(self.selected.saturating_add(1))
-    }
-
     fn has_no_results(&self) -> bool {
-        self.total == Some(0)
+        self.total == 0
     }
 
     fn selected_paper(&self) -> Option<&Paper> {
@@ -318,30 +298,14 @@ impl App {
         if self.has_no_results() {
             return;
         }
-        self.selected = match self.total {
-            Some(total) => target.min(total.saturating_sub(1)),
-            None => target,
-        };
+        self.selected = target.min(self.total.saturating_sub(1));
         self.ensure_visible_loaded(current_page_size());
     }
 
     fn jump_to_end(&mut self) {
-        let search = match self.base_search() {
-            Ok(search) => search,
-            Err(e) => {
-                self.set_error(query_error_status(&e));
-                return;
-            }
-        };
-        match self.db.search_count(&search) {
-            Ok(total) => {
-                self.total = Some(total);
-                if total > 0 {
-                    self.selected = total - 1;
-                    self.load_window_for_search(&search, current_page_size());
-                }
-            }
-            Err(e) => self.set_error(format!("db error: {e}")),
+        if self.total > 0 {
+            self.selected = self.total - 1;
+            self.load_window(current_page_size());
         }
     }
 }
@@ -474,16 +438,12 @@ fn results_page_size(total_height: u16) -> usize {
         .max(1) as usize
 }
 
-fn visible_result_start(selected: usize, page_size: usize, total: Option<usize>) -> usize {
+fn visible_result_start(selected: usize, page_size: usize, total: usize) -> usize {
     bounded_start(selected, page_size, total)
 }
 
-fn visible_end(start: usize, size: usize, total: Option<usize>) -> usize {
-    let end = start.saturating_add(size);
-    match total {
-        Some(total) => end.min(total),
-        None => end,
-    }
+fn visible_end(start: usize, size: usize, total: usize) -> usize {
+    start.saturating_add(size).min(total)
 }
 
 fn current_page_size() -> usize {
@@ -508,14 +468,11 @@ fn preload_size(page_size: usize) -> usize {
     window_size(page_size).saturating_sub(page_size) / 2
 }
 
-fn result_window_start(selected: usize, window_size: usize, total: Option<usize>) -> usize {
+fn result_window_start(selected: usize, window_size: usize, total: usize) -> usize {
     bounded_start(selected, window_size, total)
 }
 
-fn bounded_start(selected: usize, size: usize, total: Option<usize>) -> usize {
-    let Some(total) = total else {
-        return selected.saturating_sub(size / 2);
-    };
+fn bounded_start(selected: usize, size: usize, total: usize) -> usize {
     if total == 0 || total <= size {
         return 0;
     }
@@ -601,26 +558,16 @@ fn results_title(app: &App) -> String {
         return format!(" results · {} ", app.status);
     }
     let position = app.selected + 1;
-    match app.total {
-        Some(total) => format!(
-            " results · {} · sort {} · {position}/{total} ",
-            app.status,
-            sort_label(app.sort)
-        ),
-        None => format!(
-            " results · {} · sort {} · {position}/{}+ ",
-            app.status,
-            sort_label(app.sort),
-            app.known_result_bound()
-        ),
-    }
+    format!(
+        " results · {} · sort {} · {position}/{} ",
+        app.status,
+        sort_label(app.sort),
+        app.total
+    )
 }
 
-fn result_status(total: Option<usize>, known: usize) -> String {
-    match total {
-        Some(count) => format!("{count} papers"),
-        None => format!("{known}+ papers"),
-    }
+fn result_status(total: usize) -> String {
+    format!("{total} papers")
 }
 
 fn next_sort(sort: SortMode, direction: SortDirection) -> SortMode {
@@ -865,16 +812,9 @@ mod tests {
     fn window_start_stays_bounded_near_selection() {
         let size = window_size(20);
         assert_eq!(size, MIN_WINDOW_SIZE);
-        assert_eq!(result_window_start(0, size, Some(10_000)), 0);
-        assert_eq!(
-            result_window_start(5_000, size, Some(10_000)),
-            5_000 - size / 2
-        );
-        assert_eq!(
-            result_window_start(9_999, size, Some(10_000)),
-            10_000 - size
-        );
-        assert_eq!(result_window_start(5_000, size, None), 5_000 - size / 2);
+        assert_eq!(result_window_start(0, size, 10_000), 0);
+        assert_eq!(result_window_start(5_000, size, 10_000), 5_000 - size / 2);
+        assert_eq!(result_window_start(9_999, size, 10_000), 10_000 - size);
     }
 
     #[test]
@@ -937,7 +877,7 @@ mod tests {
 
         let app = App::new(db, Config::defaults().unwrap());
 
-        assert_eq!(app.total, Some(1_000));
+        assert_eq!(app.total, 1_000);
         assert!(app.results.len() <= MAX_WINDOW_SIZE);
         assert_eq!(app.status, "1000 papers");
     }

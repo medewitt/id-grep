@@ -39,7 +39,7 @@ struct Cli {
     sort: Option<SortMode>,
 
     /// Output format (default: table).
-    #[arg(long, value_parser = parse_format_arg)]
+    #[arg(long)]
     format: Option<Format>,
 
     /// Limit number of results.
@@ -48,7 +48,7 @@ struct Cli {
 
     /// Columns for table/csv output (comma-separated).
     #[arg(long, value_delimiter = ',')]
-    fields: Vec<String>,
+    fields: Vec<Column>,
 
     /// Launch the interactive TUI.
     #[arg(long)]
@@ -131,18 +131,15 @@ pub(crate) enum SortMode {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .with_target(false)
-        .without_time()
-        .init();
-
     let cli = Cli::parse();
     reject_search_args_for_subcommands(&cli)?;
     let paths = Paths::resolve()?;
-    let config = load_config_with_bundles(&cli, &paths, None)?;
+    let bundle_override = match &cli.command {
+        Some(Command::Update(args)) if !args.bundle.is_empty() => Some(args.bundle.as_slice()),
+        Some(Command::Enrich(args)) if !args.bundle.is_empty() => Some(args.bundle.as_slice()),
+        _ => None,
+    };
+    let config = load_config_with_bundles(&cli, &paths, bundle_override)?;
 
     match &cli.command {
         Some(Command::Init) => cmd_init(&cli, &paths),
@@ -247,10 +244,9 @@ fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
     )?;
     let papers = db.search(&search)?;
 
-    let columns = parse_columns(&cli.fields)?;
+    let columns = (!cli.fields.is_empty()).then_some(cli.fields.as_slice());
     let format = cli.format.unwrap_or(Format::Table);
-    let out =
-        output::render(&papers, format, columns.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
+    let out = output::render(&papers, format, columns).map_err(|e| anyhow::anyhow!(e))?;
     if !out.is_empty() {
         print!("{out}");
         if !out.ends_with('\n') {
@@ -287,33 +283,10 @@ pub(crate) fn build_search(
     })
 }
 
-fn parse_columns(fields: &[String]) -> Result<Option<Vec<Column>>> {
-    if fields.is_empty() {
-        return Ok(None);
-    }
-    let cols = fields
-        .iter()
-        .map(|f| f.parse::<Column>())
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| anyhow::anyhow!(e))?;
-    Ok(Some(cols))
-}
-
-fn parse_format_arg(value: &str) -> std::result::Result<Format, String> {
-    value.parse::<Format>().map_err(|e| e.to_string())
-}
-
 async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
     paths.ensure_dirs()?;
     let path = db_path(cli, paths);
     let mut db = Database::open(&path).context("opening database")?;
-    let override_config;
-    let config = if args.bundle.is_empty() {
-        config
-    } else {
-        override_config = load_config_with_bundles(cli, paths, Some(&args.bundle))?;
-        &override_config
-    };
 
     let venue_ids = if args.venue.is_empty() {
         config.all_venue_ids()
@@ -362,13 +335,6 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
 
 async fn cmd_enrich(args: &EnrichArgs, cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
     let mut db = open_db(cli, paths)?;
-    let override_config;
-    let config = if args.bundle.is_empty() {
-        config
-    } else {
-        override_config = load_config_with_bundles(cli, paths, Some(&args.bundle))?;
-        &override_config
-    };
     let venue_ids = if args.venue.is_empty() {
         if args.bundle.is_empty() {
             Vec::new()
@@ -456,7 +422,7 @@ async fn enrich_abstracts(
                 Ok(EnrichResult::Missing(reason)) => {
                     *misses.entry(reason).or_default() += 1;
                 }
-                Err(e) => tracing::warn!("abstract fetch failed for {dblp_key}: {e}"),
+                Err(e) => eprintln!("warning: abstract fetch failed for {dblp_key}: {e}"),
             }
             if processed.is_multiple_of(ENRICH_PROGRESS_INTERVAL) {
                 log_field(
@@ -569,6 +535,20 @@ mod tests {
         assert_eq!(args.since, Some(2025));
         assert_eq!(args.jobs, 4);
         assert_eq!(args.limit, Some(10));
+    }
+
+    #[test]
+    fn search_output_options_are_parsed_and_rejected_with_commands() {
+        let cli = Cli::try_parse_from(["sec-grep", "--format", "json", "--fields", "year,title"])
+            .unwrap();
+        assert_eq!(cli.format, Some(Format::Json));
+        assert_eq!(cli.fields, vec![Column::Year, Column::Title]);
+
+        let cli = Cli::try_parse_from(["sec-grep", "--format", "json", "update"]).unwrap();
+        assert!(reject_search_args_for_subcommands(&cli).is_err());
+
+        let cli = Cli::try_parse_from(["sec-grep", "--db", "papers.db", "update"]).unwrap();
+        assert!(reject_search_args_for_subcommands(&cli).is_ok());
     }
 
     #[test]

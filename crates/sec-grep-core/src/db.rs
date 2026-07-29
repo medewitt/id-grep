@@ -261,30 +261,35 @@ fn append_string_args(args: &mut Vec<Value>, values: &[String]) {
     args.extend(values.iter().cloned().map(Value::from));
 }
 
-fn year_ranges_clause(column: &str, start: usize, ranges: &[YearRange]) -> String {
-    let mut next = start;
+fn year_ranges_clause(column: &str, ranges: &[YearRange], args: &mut Vec<Value>) -> String {
+    let mut next = args.len() + 1;
     let clauses = ranges
         .iter()
         .map(|range| match range.bounds() {
             (Some(min), Some(max)) if min == max => {
                 let placeholder = next;
                 next += 1;
+                args.push((min as i64).into());
                 format!("{column} = ?{placeholder}")
             }
-            (Some(_), Some(_)) => {
+            (Some(min), Some(max)) => {
                 let min_placeholder = next;
                 let max_placeholder = next + 1;
                 next += 2;
+                args.push((min as i64).into());
+                args.push((max as i64).into());
                 format!("({column} >= ?{min_placeholder} AND {column} <= ?{max_placeholder})")
             }
-            (Some(_), None) => {
+            (Some(min), None) => {
                 let placeholder = next;
                 next += 1;
+                args.push((min as i64).into());
                 format!("{column} >= ?{placeholder}")
             }
-            (None, Some(_)) => {
+            (None, Some(max)) => {
                 let placeholder = next;
                 next += 1;
+                args.push((max as i64).into());
                 format!("{column} <= ?{placeholder}")
             }
             (None, None) => unreachable!("year parser rejects empty ranges"),
@@ -292,21 +297,6 @@ fn year_ranges_clause(column: &str, start: usize, ranges: &[YearRange]) -> Strin
         .collect::<Vec<_>>()
         .join(" OR ");
     format!("({clauses})")
-}
-
-fn append_year_range_args(args: &mut Vec<Value>, ranges: &[YearRange]) {
-    for range in ranges {
-        match range.bounds() {
-            (Some(min), Some(max)) if min == max => args.push((min as i64).into()),
-            (Some(min), Some(max)) => {
-                args.push((min as i64).into());
-                args.push((max as i64).into());
-            }
-            (Some(min), None) => args.push((min as i64).into()),
-            (None, Some(max)) => args.push((max as i64).into()),
-            (None, None) => unreachable!("year parser rejects empty ranges"),
-        }
-    }
 }
 
 fn order_clause(q: &Search, args: &mut Vec<Value>) -> String {
@@ -385,15 +375,11 @@ fn filter_clause(filter: &FilterExpr, args: &mut Vec<Value>) -> String {
             append_string_args(args, venues);
             clause
         }
-        FilterExpr::Year(range) => {
-            let clause = year_ranges_clause("p.year", args.len() + 1, std::slice::from_ref(range));
-            append_year_range_args(args, std::slice::from_ref(range));
-            clause
-        }
+        FilterExpr::Year(range) => year_ranges_clause("p.year", std::slice::from_ref(range), args),
         FilterExpr::Doi(term) => {
-            let clause = like_any_clause("COALESCE(p.doi, '')", args.len() + 1, 1);
-            append_like_args(args, std::slice::from_ref(term));
-            clause
+            let next = args.len() + 1;
+            args.push(format!("%{}%", escape_like(term)).into());
+            format!("(COALESCE(p.doi, '') LIKE ?{next} ESCAPE '\\')")
         }
         FilterExpr::And(filters) => boolean_filter_clause("AND", filters, args),
         FilterExpr::Or(filters) => boolean_filter_clause("OR", filters, args),
@@ -407,22 +393,6 @@ fn boolean_filter_clause(operator: &str, filters: &[FilterExpr], args: &mut Vec<
         .map(|filter| filter_clause(filter, args))
         .collect::<Vec<_>>();
     format!("({})", clauses.join(&format!(" {operator} ")))
-}
-
-fn like_any_clause(column: &str, start: usize, value_count: usize) -> String {
-    let clauses = (start..start + value_count)
-        .map(|i| format!("{column} LIKE ?{i} ESCAPE '\\'"))
-        .collect::<Vec<_>>()
-        .join(" OR ");
-    format!("({clauses})")
-}
-
-fn append_like_args(args: &mut Vec<Value>, values: &[String]) {
-    args.extend(
-        values
-            .iter()
-            .map(|value| Value::from(format!("%{}%", escape_like(value)))),
-    );
 }
 
 fn escape_like(value: &str) -> String {
@@ -451,8 +421,7 @@ fn missing_abstract_parts(
         append_string_args(&mut args, venues);
     }
     if !years.is_empty() {
-        where_clauses.push(year_ranges_clause("p.year", args.len() + 1, years));
-        append_year_range_args(&mut args, years);
+        where_clauses.push(year_ranges_clause("p.year", years, &mut args));
     }
     if let Some(after_id) = after_id {
         let next = args.len() + 1;

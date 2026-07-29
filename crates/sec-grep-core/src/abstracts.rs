@@ -670,10 +670,9 @@ impl Enricher {
                 Ok(abstracts) => {
                     self.openreview_cache.insert(key, abstracts);
                 }
-                Err(e) => tracing::warn!(
-                    "OpenReview batch lookup failed for {} {}: {e}",
-                    key.0,
-                    key.1
+                Err(e) => eprintln!(
+                    "warning: OpenReview batch lookup failed for {} {}: {e}",
+                    key.0, key.1
                 ),
             }
         }
@@ -703,7 +702,7 @@ impl Enricher {
             {
                 Ok(hits) => hits,
                 Err(e) => {
-                    tracing::warn!("Semantic Scholar DOI batch lookup failed: {e}");
+                    eprintln!("warning: Semantic Scholar DOI batch lookup failed: {e}");
                     retry_individually.extend(chunk.iter().cloned());
                     HashMap::new()
                 }
@@ -717,7 +716,7 @@ impl Enricher {
                 match self.openalex_doi_abstracts(missing, &expected_titles).await {
                     Ok(openalex_hits) => hits.extend(openalex_hits),
                     Err(e) => {
-                        tracing::warn!("OpenAlex DOI batch lookup failed: {e}");
+                        eprintln!("warning: OpenAlex DOI batch lookup failed: {e}");
                         retry_individually.extend(missing.iter().cloned());
                     }
                 }
@@ -1454,6 +1453,14 @@ mod tests {
         assert_eq!(
             abstract_from_openalex(&work).as_deref(),
             Some("Direct text.")
+        );
+    }
+
+    #[test]
+    fn text_sanitization_preserves_angle_bracket_notation() {
+        assert_eq!(
+            non_empty_text("Use <EOS> when k<n, Vec<T>, and &amp; delimiters.").as_deref(),
+            Some("Use <EOS> when k<n, Vec<T>, and & delimiters.")
         );
     }
 

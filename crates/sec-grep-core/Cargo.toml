@@ -16,7 +16,6 @@ reqwest.workspace = true
 tokio.workspace = true
 futures.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 dotenvy.workspace = true
 scraper.workspace = true
 csv.workspace = true

@@ -243,7 +243,6 @@ impl Config {
         struct RankGroup {
             label: String,
             sort_key: u8,
-            first_seen: usize,
         }
 
         let mut groups: Vec<RankGroup> = Vec::new();
@@ -257,10 +256,9 @@ impl Config {
             groups.push(RankGroup {
                 sort_key: rank_sort_key(&rank),
                 label: rank,
-                first_seen: groups.len(),
             });
         }
-        groups.sort_by_key(|group| (group.sort_key, group.first_seen));
+        groups.sort_by_key(|group| group.sort_key);
         groups
             .into_iter()
             .map(|group| self.venues_by_rank(std::slice::from_ref(&group.label)))
