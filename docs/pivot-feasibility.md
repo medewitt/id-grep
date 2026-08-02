@@ -86,22 +86,22 @@ Bundles under `crates/cs-grep-core/venues/`. ISSNs / OpenAlex source-ids
 hand-enter.
 
 - **`epi`** — Journal of Infectious Diseases, The Lancet Infectious Diseases,
-  The Lancet, Emerging Infectious Diseases, Epidemiology and Infection, +rec:
+  The Lancet, Emerging Infectious Diseases, Epidemiology and Infection,
   Clinical Infectious Diseases, American Journal of Epidemiology, International
   Journal of Epidemiology, Epidemiology, BMC Infectious Diseases.
 - **`modelling`** — Epidemics, Infectious Disease Modelling, PLoS Computational
   Biology, PLoS ONE, PLoS Neglected Tropical Diseases, Journal of Theoretical
-  Biology, Theoretical Population Biology, +rec: Bulletin of Mathematical
-  Biology, Mathematical Biosciences, J. R. Soc. Interface.
-- **`ecoevo`** — Ecology, Ecology Letters, +rec: Journal of Animal Ecology,
+  Biology, Theoretical Population Biology, Bulletin of Mathematical Biology,
+  Mathematical Biosciences, J. R. Soc. Interface.
+- **`ecoevo`** — Ecology, Ecology Letters, Journal of Animal Ecology,
   Functional Ecology, Proc. R. Soc. B, Evolution, Molecular Biology and
   Evolution, Virus Evolution, PLoS Pathogens, Parasitology, Trends in Ecology &
   Evolution.
 - **`preprints`** *(off by default)* — bioRxiv, medRxiv (arXiv `q-bio.PE`
   optional).
 
-The original journal list is fully covered; `(rec)` items are recommendations to
-confirm/trim.
+The full list above is confirmed by the maintainer — it covers the original
+journal request plus the agreed additions.
 
 ## Verification (for the eventual implementation)
 

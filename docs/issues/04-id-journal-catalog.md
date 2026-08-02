@@ -29,19 +29,20 @@ resolved from the NLM Catalog for PubMed.
 
 - **`epi`** — Journal of Infectious Diseases, The Lancet Infectious Diseases,
   The Lancet, Emerging Infectious Diseases, Epidemiology and Infection,
-  Clinical Infectious Diseases *(rec)*, American Journal of Epidemiology *(rec)*,
-  International Journal of Epidemiology *(rec)*, Epidemiology *(rec)*,
-  BMC Infectious Diseases *(rec)*.
+  Clinical Infectious Diseases, American Journal of Epidemiology,
+  International Journal of Epidemiology, Epidemiology, BMC Infectious Diseases.
 - **`modelling`** — Epidemics, Infectious Disease Modelling, PLoS Computational
   Biology, PLoS ONE, PLoS Neglected Tropical Diseases, Journal of Theoretical
-  Biology, Theoretical Population Biology, Bulletin of Mathematical Biology
-  *(rec)*, Mathematical Biosciences *(rec)*, J. R. Soc. Interface *(rec)*.
-- **`ecoevo`** — Ecology, Ecology Letters, Journal of Animal Ecology *(rec)*,
-  Functional Ecology *(rec)*, Proc. R. Soc. B *(rec)*, Evolution *(rec)*,
-  Molecular Biology and Evolution *(rec)*, Virus Evolution *(rec)*,
-  PLoS Pathogens *(rec)*, Parasitology *(rec)*, Trends in Ecology & Evolution
-  *(rec)*.
+  Biology, Theoretical Population Biology, Bulletin of Mathematical Biology,
+  Mathematical Biosciences, J. R. Soc. Interface.
+- **`ecoevo`** — Ecology, Ecology Letters, Journal of Animal Ecology,
+  Functional Ecology, Proc. R. Soc. B, Evolution, Molecular Biology and
+  Evolution, Virus Evolution, PLoS Pathogens, Parasitology, Trends in Ecology &
+  Evolution.
 - **`preprints`** — bioRxiv, medRxiv (arXiv `q-bio.PE` optional).
+
+The full list above is confirmed by the maintainer (original request plus the
+agreed additions).
 
 Each venue entry carries `id`, `name`, `aliases`, `tags`, and the
 source-agnostic identifiers from #1 (`issn`, `openalex_source_id`,
