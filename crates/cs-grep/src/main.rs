@@ -12,9 +12,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use cs_grep_core::abstracts::{EnrichResult, Enricher};
 use cs_grep_core::config::{Config, Paths, Secrets};
 use cs_grep_core::db::{Database, Search, Sort};
-use cs_grep_core::dblp::Dblp;
 use cs_grep_core::output::{self, Column, Format};
 use cs_grep_core::query;
+use cs_grep_core::sources::{dblp::Dblp, Source};
 use cs_grep_core::Paper;
 
 /// Upper bound for dblp year filters; papers never exceed this.
@@ -413,16 +413,16 @@ async fn enrich_abstracts(
         let mut abstract_updates = Vec::new();
         for (paper, res) in results {
             processed += 1;
-            let dblp_key = paper.dblp_key;
+            let key = paper.key;
             match res {
                 Ok(EnrichResult::Found(abs)) => {
-                    abstract_updates.push((dblp_key, abs));
+                    abstract_updates.push((key, abs));
                     filled += 1;
                 }
                 Ok(EnrichResult::Missing(reason)) => {
                     *misses.entry(reason).or_default() += 1;
                 }
-                Err(e) => eprintln!("warning: abstract fetch failed for {dblp_key}: {e}"),
+                Err(e) => eprintln!("warning: abstract fetch failed for {key}: {e}"),
             }
             if processed.is_multiple_of(ENRICH_PROGRESS_INTERVAL) {
                 log_field(

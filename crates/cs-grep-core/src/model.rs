@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// A conference paper record as stored and queried.
+/// A paper record as stored and queried.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paper {
-    pub dblp_key: String,
+    /// Stable, source-scoped identifier used as the storage key.
+    pub key: String,
+    /// Ingestion source that produced this record (e.g. `dblp`, `openalex`).
+    pub source: String,
     pub venue: String,
     pub year: i32,
     pub title: String,
@@ -16,7 +19,7 @@ pub struct Paper {
 }
 
 impl Paper {
-    /// Generate a dblp-style BibTeX citation key, e.g. `NDSS:2021:smith`.
+    /// Generate a BibTeX citation key, e.g. `NDSS:2021:smith`.
     pub fn cite_key(&self) -> String {
         let first_author = self
             .authors

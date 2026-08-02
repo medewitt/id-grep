@@ -773,7 +773,8 @@ mod tests {
 
     fn paper(index: usize) -> Paper {
         Paper {
-            dblp_key: format!("k{index}"),
+            key: format!("k{index}"),
+            source: "dblp".to_string(),
             venue: "NDSS".to_string(),
             year: 2024,
             title: format!("Paper {index}"),
@@ -793,7 +794,10 @@ mod tests {
                 .map(|(id, rank)| Venue {
                     id: id.to_string(),
                     name: String::new(),
-                    dblp_stream: format!("conf/{}", id.to_ascii_lowercase()),
+                    dblp_stream: Some(format!("conf/{}", id.to_ascii_lowercase())),
+                    issn: Vec::new(),
+                    openalex_source_id: None,
+                    pubmed_journal: None,
                     aliases: Vec::new(),
                     rank: (!rank.is_empty()).then(|| rank.to_string()),
                     tags: Vec::new(),

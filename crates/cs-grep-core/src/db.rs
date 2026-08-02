@@ -8,13 +8,19 @@ use crate::config::RankSortOrder;
 use crate::query::{FilterExpr, YearRange};
 use crate::{Paper, Result};
 
+/// Storage schema version. Bump when the `papers` layout changes; a database
+/// written by an older version is dropped and rebuilt on open (the index is a
+/// local cache that `update` can always repopulate).
+const DB_VERSION: i64 = 2;
+
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS papers (
     id         INTEGER PRIMARY KEY,
-    dblp_key   TEXT UNIQUE NOT NULL,
+    paper_key  TEXT UNIQUE NOT NULL,
+    source     TEXT NOT NULL DEFAULT '',
     venue      TEXT NOT NULL,
     year       INTEGER NOT NULL,
     title      TEXT NOT NULL,
@@ -54,7 +60,7 @@ END;
 "#;
 
 const PAPER_COLUMNS_WITH_ALIAS: &str =
-    "p.dblp_key, p.venue, p.year, p.title, p.authors, p.doi, p.url, p.abstract";
+    "p.paper_key, p.source, p.venue, p.year, p.title, p.authors, p.doi, p.url, p.abstract";
 
 /// How to order search results.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -105,7 +111,27 @@ impl Database {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let has_papers: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'papers'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        if has_papers && version < DB_VERSION {
+            // Incompatible schema from an older build: drop and rebuild. The
+            // index is a rebuildable cache, so no data migration is needed.
+            conn.execute_batch(
+                r#"
+                DROP TRIGGER IF EXISTS papers_ai;
+                DROP TRIGGER IF EXISTS papers_ad;
+                DROP TRIGGER IF EXISTS papers_au;
+                DROP TABLE IF EXISTS papers_fts;
+                DROP TABLE IF EXISTS papers;
+                "#,
+            )?;
+        }
         conn.execute_batch(SCHEMA)?;
+        conn.pragma_update(None, "user_version", DB_VERSION)?;
         Ok(Self { conn })
     }
 
@@ -115,16 +141,20 @@ impl Database {
             .query_row("SELECT COUNT(*) FROM papers", [], |r| r.get(0))?)
     }
 
-    /// Insert or update papers keyed by `dblp_key`. Returns rows affected.
+    /// Insert or update papers keyed by `paper_key`. Returns rows affected.
+    ///
+    /// Identity is the source-scoped `key`; cross-source de-duplication by DOI
+    /// or normalized title is deferred until multiple ingestion sources exist.
     pub fn upsert_papers(&mut self, papers: &[Paper]) -> Result<usize> {
         let tx = self.conn.transaction()?;
         let mut n = 0;
         {
             let mut stmt = tx.prepare(
                 r#"
-                INSERT INTO papers (dblp_key, venue, year, title, authors, doi, url, abstract, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
-                ON CONFLICT(dblp_key) DO UPDATE SET
+                INSERT INTO papers (paper_key, source, venue, year, title, authors, doi, url, abstract, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+                ON CONFLICT(paper_key) DO UPDATE SET
+                    source = excluded.source,
                     venue = excluded.venue,
                     year = excluded.year,
                     title = excluded.title,
@@ -134,6 +164,7 @@ impl Database {
                     abstract = COALESCE(excluded.abstract, papers.abstract),
                     updated_at = datetime('now')
                 WHERE
+                    papers.source IS NOT excluded.source OR
                     papers.venue IS NOT excluded.venue OR
                     papers.year IS NOT excluded.year OR
                     papers.title IS NOT excluded.title OR
@@ -145,7 +176,8 @@ impl Database {
             )?;
             for p in papers {
                 n += stmt.execute(rusqlite::params![
-                    p.dblp_key,
+                    p.key,
+                    p.source,
                     p.venue,
                     p.year,
                     p.title,
@@ -167,10 +199,10 @@ impl Database {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "UPDATE papers SET abstract = ?2, updated_at = datetime('now') WHERE dblp_key = ?1",
+                "UPDATE papers SET abstract = ?2, updated_at = datetime('now') WHERE paper_key = ?1",
             )?;
-            for (dblp_key, abstract_text) in abstracts {
-                stmt.execute(rusqlite::params![dblp_key, abstract_text])?;
+            for (paper_key, abstract_text) in abstracts {
+                stmt.execute(rusqlite::params![paper_key, abstract_text])?;
             }
         }
         tx.commit()?;
@@ -438,14 +470,15 @@ fn missing_abstract_parts(
 
 fn row_to_paper(row: &Row) -> rusqlite::Result<Paper> {
     Ok(Paper {
-        dblp_key: row.get(0)?,
-        venue: row.get(1)?,
-        year: row.get(2)?,
-        title: row.get(3)?,
-        authors: row.get(4)?,
-        doi: row.get(5)?,
-        url: row.get(6)?,
-        abstract_text: row.get(7)?,
+        key: row.get(0)?,
+        source: row.get(1)?,
+        venue: row.get(2)?,
+        year: row.get(3)?,
+        title: row.get(4)?,
+        authors: row.get(5)?,
+        doi: row.get(6)?,
+        url: row.get(7)?,
+        abstract_text: row.get(8)?,
     })
 }
 
@@ -453,14 +486,15 @@ fn row_to_missing_paper(row: &Row) -> rusqlite::Result<MissingPaper> {
     Ok(MissingPaper {
         id: row.get(0)?,
         paper: Paper {
-            dblp_key: row.get(1)?,
-            venue: row.get(2)?,
-            year: row.get(3)?,
-            title: row.get(4)?,
-            authors: row.get(5)?,
-            doi: row.get(6)?,
-            url: row.get(7)?,
-            abstract_text: row.get(8)?,
+            key: row.get(1)?,
+            source: row.get(2)?,
+            venue: row.get(3)?,
+            year: row.get(4)?,
+            title: row.get(5)?,
+            authors: row.get(6)?,
+            doi: row.get(7)?,
+            url: row.get(8)?,
+            abstract_text: row.get(9)?,
         },
     })
 }
@@ -471,7 +505,8 @@ mod tests {
 
     fn paper(key: &str, venue: &str, year: i32, title: &str, abs: Option<&str>) -> Paper {
         Paper {
-            dblp_key: key.into(),
+            key: key.into(),
+            source: "dblp".into(),
             venue: venue.into(),
             year,
             title: title.into(),
@@ -509,7 +544,7 @@ mod tests {
         db.search(&Search::default())
             .unwrap()
             .into_iter()
-            .find(|paper| paper.dblp_key == key)
+            .find(|paper| paper.key == key)
             .unwrap()
     }
 
@@ -548,7 +583,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let keys: Vec<_> = hits.iter().map(|p| p.dblp_key.as_str()).collect();
+        let keys: Vec<_> = hits.iter().map(|p| p.key.as_str()).collect();
         assert!(keys.contains(&"k1"));
         assert!(keys.contains(&"k3"));
         assert!(!keys.contains(&"k2"));
@@ -588,7 +623,7 @@ mod tests {
             .unwrap();
         let keys = hits
             .iter()
-            .map(|paper| paper.dblp_key.as_str())
+            .map(|paper| paper.key.as_str())
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["k2", "k3"]);
     }
@@ -605,7 +640,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        assert_eq!(intersection[0].dblp_key, "k3");
+        assert_eq!(intersection[0].key, "k3");
 
         let excluded = db
             .search(&Search {
@@ -630,7 +665,7 @@ mod tests {
             .unwrap();
         let keys = hits
             .iter()
-            .map(|paper| paper.dblp_key.as_str())
+            .map(|paper| paper.key.as_str())
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["k1", "k3", "k2"]);
     }
@@ -646,7 +681,7 @@ mod tests {
             .unwrap();
         let keys = hits
             .iter()
-            .map(|paper| paper.dblp_key.as_str())
+            .map(|paper| paper.key.as_str())
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["k2", "k1", "k3"]);
     }
@@ -677,7 +712,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].dblp_key, "k4");
+        assert_eq!(hits[0].key, "k4");
     }
 
     #[test]
@@ -691,7 +726,7 @@ mod tests {
         assert_eq!(db.search_count(&search).unwrap(), 3);
         let hits = db.search(&search).unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].dblp_key, "k1");
+        assert_eq!(hits[0].key, "k1");
     }
 
     #[test]
@@ -711,7 +746,7 @@ mod tests {
         assert_eq!(db.count_missing_abstracts(&[], &[]).unwrap(), 1);
         let missing = db.papers_missing_abstract_batch(&[], &[], 0, 10).unwrap();
         assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].paper.dblp_key, "k2");
+        assert_eq!(missing[0].paper.key, "k2");
         let next = db
             .papers_missing_abstract_batch(&[], &[], missing[0].id, 10)
             .unwrap();
@@ -730,7 +765,7 @@ mod tests {
             db.papers_missing_abstract_batch(&[], &[YearRange::single(2021)], 0, 10)
                 .unwrap()[0]
                 .paper
-                .dblp_key,
+                .key,
             "k2"
         );
     }
@@ -747,6 +782,45 @@ mod tests {
             })
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].dblp_key, "k2");
+        assert_eq!(hits[0].key, "k2");
+    }
+
+    #[test]
+    fn open_rebuilds_incompatible_old_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        {
+            // A database written by the pre-pivot schema (dblp_key, no source,
+            // user_version 0).
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE papers (
+                    id       INTEGER PRIMARY KEY,
+                    dblp_key TEXT UNIQUE NOT NULL,
+                    venue    TEXT NOT NULL,
+                    year     INTEGER NOT NULL,
+                    title    TEXT NOT NULL,
+                    authors  TEXT NOT NULL,
+                    doi TEXT, url TEXT, abstract TEXT
+                );
+                INSERT INTO papers (dblp_key, venue, year, title, authors)
+                VALUES ('legacy', 'NDSS', 2019, 'Legacy row', 'Old Author');
+                "#,
+            )
+            .unwrap();
+        }
+
+        // Opening through Database detects the stale schema and rebuilds it.
+        let mut db = Database::open(&path).unwrap();
+        assert_eq!(db.count().unwrap(), 0);
+
+        // The rebuilt database uses the current schema end-to-end.
+        db.upsert_papers(&[paper("k1", "Epidemics", 2021, "Reservoir hosts", None)])
+            .unwrap();
+        let hits = db.search(&Search::default()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "k1");
+        assert_eq!(hits[0].source, "dblp");
     }
 }

@@ -1378,7 +1378,8 @@ mod tests {
 
     fn paper(title: &str) -> Paper {
         Paper {
-            dblp_key: "conf/iclr/example".into(),
+            key: "conf/iclr/example".into(),
+            source: "dblp".into(),
             venue: "ICLR".into(),
             year: 2024,
             title: title.into(),

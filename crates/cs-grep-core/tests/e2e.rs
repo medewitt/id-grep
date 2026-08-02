@@ -3,7 +3,8 @@
 use cs_grep_core::config::Config;
 use cs_grep_core::db::{Database, Search};
 use cs_grep_core::output::{render, Format};
-use cs_grep_core::{dblp, query};
+use cs_grep_core::query;
+use cs_grep_core::sources::dblp;
 use serde_json::json;
 
 fn fixture() -> serde_json::Value {
@@ -60,7 +61,7 @@ fn full_pipeline() {
         })
         .unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].dblp_key, "p2");
+    assert_eq!(hits[0].key, "p2");
 
     // full-text and metadata query
     let parsed = query::parse("attacks WHERE year:2023- AND venue:NDSS", &config).unwrap();
@@ -72,7 +73,7 @@ fn full_pipeline() {
         })
         .unwrap();
     assert_eq!(recent.len(), 1);
-    assert_eq!(recent[0].dblp_key, "p2");
+    assert_eq!(recent[0].key, "p2");
 
     // bibtex render
     let bib = render(&papers, Format::Bibtex, None).unwrap();

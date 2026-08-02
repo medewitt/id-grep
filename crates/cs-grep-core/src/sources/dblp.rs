@@ -5,7 +5,11 @@ use std::{collections::BTreeMap, time::Duration};
 use serde_json::Value;
 
 use crate::config::Venue;
+use crate::sources::Source;
 use crate::{Error, Paper, Result};
+
+/// Value stored in [`Paper::source`] for records from this backend.
+pub const SOURCE_NAME: &str = "dblp";
 
 pub const DEFAULT_ENDPOINT: &str = "https://sparql.dblp.org/sparql";
 const CONFERENCE_STREAM_PREFIX: &str = "conf/";
@@ -100,7 +104,8 @@ pub fn parse_results(json: &Value, venue_id: &str) -> Vec<Paper> {
             let doi = url.as_deref().and_then(extract_doi);
             (
                 Paper {
-                    dblp_key: publ.to_string(),
+                    key: publ.to_string(),
+                    source: SOURCE_NAME.to_string(),
                     venue: venue_id.to_string(),
                     year,
                     title,
@@ -159,15 +164,20 @@ impl Dblp {
             client,
         }
     }
+}
+
+impl Source for Dblp {
+    fn name(&self) -> &str {
+        SOURCE_NAME
+    }
 
     /// Fetch and parse all papers for a venue between the given years.
-    pub async fn fetch_venue(
-        &self,
-        venue: &Venue,
-        min_year: i32,
-        max_year: i32,
-    ) -> Result<Vec<Paper>> {
-        let query = build_query(&venue.dblp_stream, min_year, max_year)?;
+    async fn fetch_venue(&self, venue: &Venue, min_year: i32, max_year: i32) -> Result<Vec<Paper>> {
+        let stream = venue
+            .dblp_stream
+            .as_deref()
+            .ok_or_else(|| Error::Config(format!("venue `{}` has no dblp_stream", venue.id)))?;
+        let query = build_query(stream, min_year, max_year)?;
         let resp = self
             .client
             .get(&self.endpoint)
@@ -265,12 +275,13 @@ mod tests {
         });
         let papers = parse_results(&doc, "NDSS");
         assert_eq!(papers.len(), 2);
-        let p1 = papers.iter().find(|p| p.dblp_key == "p1").unwrap();
+        let p1 = papers.iter().find(|p| p.key == "p1").unwrap();
         assert_eq!(p1.authors, "Alice A, Bob B");
         assert_eq!(p1.venue, "NDSS");
         assert_eq!(p1.year, 2020);
+        assert_eq!(p1.source, SOURCE_NAME);
         assert_eq!(p1.doi.as_deref(), Some("10.1/a"));
-        let p2 = papers.iter().find(|p| p.dblp_key == "p2").unwrap();
+        let p2 = papers.iter().find(|p| p.key == "p2").unwrap();
         assert_eq!(p2.authors, "Carol C");
         assert!(p2.url.is_none());
     }

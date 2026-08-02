@@ -20,7 +20,18 @@ pub struct Venue {
     pub id: String,
     #[serde(default)]
     pub name: String,
-    pub dblp_stream: String,
+    /// DBLP RDF stream id (e.g. `conf/ndss`), used by the DBLP source only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dblp_stream: Option<String>,
+    /// ISSN(s) identifying this venue for OpenAlex ingestion.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issn: Vec<String>,
+    /// OpenAlex source id (e.g. `S123456789`), preferred over ISSN when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openalex_source_id: Option<String>,
+    /// NLM title abbreviation used by the PubMed source (e.g. `Emerg Infect Dis`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pubmed_journal: Option<String>,
     #[serde(default)]
     pub aliases: Vec<String>,
     #[serde(default)]
@@ -346,7 +357,10 @@ mod tests {
         Venue {
             id: id.to_string(),
             name: String::new(),
-            dblp_stream: format!("conf/{}", id.to_ascii_lowercase()),
+            dblp_stream: Some(format!("conf/{}", id.to_ascii_lowercase())),
+            issn: Vec::new(),
+            openalex_source_id: None,
+            pubmed_journal: None,
             aliases: Vec::new(),
             rank: (!rank.is_empty()).then(|| rank.to_string()),
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
@@ -563,7 +577,7 @@ venues:
         let bundles = vec!["se".to_string()];
         let cfg = Config::load_with_bundles(Some(&path), Some(&bundles)).unwrap();
         let venue = cfg.venue("NDSS").unwrap();
-        assert_eq!(venue.dblp_stream, "conf/custom-ndss");
+        assert_eq!(venue.dblp_stream.as_deref(), Some("conf/custom-ndss"));
         assert_eq!(venue.rank.as_deref(), Some("custom"));
     }
 

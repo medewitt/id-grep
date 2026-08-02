@@ -53,7 +53,7 @@ impl Column {
 
     fn value(self, p: &Paper) -> String {
         match self {
-            Column::Key => p.dblp_key.clone(),
+            Column::Key => p.key.clone(),
             Column::Venue => p.venue.clone(),
             Column::Year => p.year.to_string(),
             Column::Title => p.title.clone(),
@@ -69,7 +69,7 @@ impl FromStr for Column {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self> {
         match s.to_ascii_lowercase().as_str() {
-            "key" | "dblp_key" => Ok(Column::Key),
+            "key" => Ok(Column::Key),
             "venue" => Ok(Column::Venue),
             "year" => Ok(Column::Year),
             "title" => Ok(Column::Title),
@@ -248,7 +248,8 @@ mod tests {
 
     fn sample() -> Vec<Paper> {
         vec![Paper {
-            dblp_key: "conf/ndss/Smith20".into(),
+            key: "conf/ndss/Smith20".into(),
+            source: "dblp".into(),
             venue: "NDSS".into(),
             year: 2020,
             title: "Fuzzing the Linux kernel".into(),
@@ -313,7 +314,8 @@ mod tests {
     #[test]
     fn bibtex_escapes_values_and_sanitizes_key() {
         let paper = Paper {
-            dblp_key: "x".into(),
+            key: "x".into(),
+            source: "dblp".into(),
             venue: "S&P".into(),
             year: 2024,
             title: "A {broken} 100%_safe #1".into(),
