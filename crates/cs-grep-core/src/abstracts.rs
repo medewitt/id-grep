@@ -38,15 +38,23 @@ const MAX_ABSTRACT_CHARS: usize = 6_000;
 enum AbstractSource {
     Acl,
     Acm,
+    Biorxiv,
     Cvf,
+    Eid,
+    Elsevier,
     Ieee,
     Ijcai,
     Ndss,
     Neurips,
     Openreview,
+    Oup,
+    Plos,
     Pmlr,
+    Pnas,
+    RoyalSociety,
     Springer,
     Usenix,
+    Wiley,
 }
 
 /// Reconstruct plain text from an OpenAlex `abstract_inverted_index`,
@@ -1162,6 +1170,20 @@ fn source_from_static_url(url: &Url) -> Option<AbstractSource> {
         "link.springer.com" => Some(AbstractSource::Springer),
         "ndss-symposium.org" | "www.ndss-symposium.org" => Some(AbstractSource::Ndss),
         "usenix.org" | "www.usenix.org" => Some(AbstractSource::Usenix),
+        "journals.plos.org" => Some(AbstractSource::Plos),
+        "sciencedirect.com" | "www.sciencedirect.com" | "linkinghub.elsevier.com" => {
+            Some(AbstractSource::Elsevier)
+        }
+        "academic.oup.com" => Some(AbstractSource::Oup),
+        "royalsocietypublishing.org" | "www.royalsocietypublishing.org" => {
+            Some(AbstractSource::RoyalSociety)
+        }
+        "biorxiv.org" | "www.biorxiv.org" | "medrxiv.org" | "www.medrxiv.org" => {
+            Some(AbstractSource::Biorxiv)
+        }
+        "wwwnc.cdc.gov" => Some(AbstractSource::Eid),
+        "pnas.org" | "www.pnas.org" => Some(AbstractSource::Pnas),
+        "onlinelibrary.wiley.com" => Some(AbstractSource::Wiley),
         _ if host.ends_with(".neurips.cc") || host.ends_with(".nips.cc") => {
             Some(AbstractSource::Neurips)
         }
@@ -1187,6 +1209,16 @@ fn source_from_doi_url(url: &Url) -> Option<AbstractSource> {
         doi if doi.starts_with("10.24963/") => Some(AbstractSource::Ijcai),
         doi if doi.starts_with("10.1007/") => Some(AbstractSource::Springer),
         doi if doi.starts_with("10.14722/") => Some(AbstractSource::Ndss),
+        doi if doi.starts_with("10.1371/") => Some(AbstractSource::Plos),
+        doi if doi.starts_with("10.1016/") => Some(AbstractSource::Elsevier),
+        doi if doi.starts_with("10.1093/") => Some(AbstractSource::Oup),
+        doi if doi.starts_with("10.1098/") => Some(AbstractSource::RoyalSociety),
+        doi if doi.starts_with("10.1101/") => Some(AbstractSource::Biorxiv),
+        doi if doi.starts_with("10.3201/") => Some(AbstractSource::Eid),
+        doi if doi.starts_with("10.1073/") => Some(AbstractSource::Pnas),
+        doi if doi.starts_with("10.1002/") || doi.starts_with("10.1111/") => {
+            Some(AbstractSource::Wiley)
+        }
         _ => None,
     }
 }
@@ -1805,6 +1837,125 @@ mod tests {
         assert_eq!(
             source_from_paper_url("https://doi.org/10.24963/ijcai.2024/1"),
             Some(AbstractSource::Ijcai)
+        );
+    }
+
+    #[test]
+    fn bio_publisher_doi_prefixes_route_to_sources() {
+        for (doi, expected) in [
+            ("10.1371/journal.pone.0000001", AbstractSource::Plos),
+            ("10.1016/j.cell.2024.01.001", AbstractSource::Elsevier),
+            ("10.1093/nar/gkae001", AbstractSource::Oup),
+            ("10.1098/rspb.2024.0001", AbstractSource::RoyalSociety),
+            ("10.1101/2024.01.01.573001", AbstractSource::Biorxiv),
+            ("10.3201/eid3001.230001", AbstractSource::Eid),
+            ("10.1073/pnas.2400001121", AbstractSource::Pnas),
+            ("10.1002/anie.202400001", AbstractSource::Wiley),
+            ("10.1111/mec.17001", AbstractSource::Wiley),
+        ] {
+            assert_eq!(
+                source_from_paper_url(&format!("https://doi.org/{doi}")),
+                Some(expected),
+                "{doi}"
+            );
+        }
+    }
+
+    #[test]
+    fn bio_publisher_hosts_route_to_sources() {
+        for (url, expected) in [
+            (
+                "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0000001",
+                AbstractSource::Plos,
+            ),
+            (
+                "https://www.sciencedirect.com/science/article/pii/S0092867424000001",
+                AbstractSource::Elsevier,
+            ),
+            (
+                "https://linkinghub.elsevier.com/retrieve/pii/S0092867424000001",
+                AbstractSource::Elsevier,
+            ),
+            (
+                "https://academic.oup.com/nar/article/52/1/1/7000001",
+                AbstractSource::Oup,
+            ),
+            (
+                "https://royalsocietypublishing.org/doi/10.1098/rspb.2024.0001",
+                AbstractSource::RoyalSociety,
+            ),
+            (
+                "https://www.biorxiv.org/content/10.1101/2024.01.01.573001v1",
+                AbstractSource::Biorxiv,
+            ),
+            (
+                "https://www.medrxiv.org/content/10.1101/2024.01.01.24300001v1",
+                AbstractSource::Biorxiv,
+            ),
+            (
+                "https://wwwnc.cdc.gov/eid/article/30/1/23-0001_article",
+                AbstractSource::Eid,
+            ),
+            (
+                "https://www.pnas.org/doi/10.1073/pnas.2400001121",
+                AbstractSource::Pnas,
+            ),
+            (
+                "https://onlinelibrary.wiley.com/doi/10.1002/anie.202400001",
+                AbstractSource::Wiley,
+            ),
+        ] {
+            assert_eq!(
+                source_from_static_url(&Url::parse(url).unwrap()),
+                Some(expected),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn bio_publishers_extract_from_generic_meta() {
+        let abs = fixture_abstract("Bio publisher abstract.");
+        for source in [
+            AbstractSource::Plos,
+            AbstractSource::Elsevier,
+            AbstractSource::Oup,
+            AbstractSource::RoyalSociety,
+            AbstractSource::Biorxiv,
+            AbstractSource::Eid,
+            AbstractSource::Pnas,
+            AbstractSource::Wiley,
+        ] {
+            let html = format!(
+                r#"<html><head>
+                    <meta name="citation_abstract" content="{abs}">
+                </head><body></body></html>"#
+            );
+            assert_eq!(
+                abstract_candidates(&html, Some(source))
+                    .into_iter()
+                    .find_map(|raw| usable_abstract_for_title(raw, "A bio paper title"))
+                    .as_deref(),
+                Some(abs.as_str()),
+                "{source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn biorxiv_extracts_from_og_description() {
+        let abs = fixture_abstract("A bioRxiv preprint abstract.");
+        let html = format!(
+            r#"<html><head>
+                <meta property="og:description" content="{abs}">
+            </head><body></body></html>"#
+        );
+        assert_eq!(
+            abstract_candidates(&html, Some(AbstractSource::Biorxiv))
+                .into_iter()
+                .find_map(|raw| usable_abstract_for_title(raw, "A bio paper title"))
+                .as_deref(),
+            Some(abs.as_str())
         );
     }
 
