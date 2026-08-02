@@ -4,6 +4,7 @@
 # OS/editor/app local state
 .DS_Store
 .claude/*.lock
+.claude/worktrees/
 
 # Rust
 /target
