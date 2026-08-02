@@ -1,0 +1,6 @@
+[toolchain]
+# Matches the workspace MSRV (rust-version = "1.95"). A transitive dependency
+# (libsqlite3-sys 0.38) uses the `cfg_select!` macro, stabilized in Rust 1.95,
+# so older toolchains cannot build the project.
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

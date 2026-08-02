@@ -118,8 +118,12 @@ fn build_filter(venue: &Venue, min_year: i32, max_year: i32) -> Result<String> {
             venue.id
         )));
     };
+    let scope_filter = venue
+        .scope
+        .map(|s| format!(",{}", s.openalex_filter()))
+        .unwrap_or_default();
     Ok(format!(
-        "{source_filter},from_publication_date:{min_year}-01-01,to_publication_date:{max_year}-12-31"
+        "{source_filter},from_publication_date:{min_year}-01-01,to_publication_date:{max_year}-12-31{scope_filter}"
     ))
 }
 
@@ -220,6 +224,7 @@ mod tests {
             aliases: Vec::new(),
             rank: None,
             tags: Vec::new(),
+            scope: None,
         }
     }
 
@@ -317,6 +322,17 @@ mod tests {
     #[test]
     fn build_filter_errors_without_identifiers() {
         assert!(build_filter(&venue("V", &[], None), 2020, 2025).is_err());
+    }
+
+    #[test]
+    fn build_filter_appends_scope_when_set() {
+        let mut v = venue("V", &[], Some("S99"));
+        assert!(!build_filter(&v, 2020, 2025)
+            .unwrap()
+            .contains("primary_topic.subfield.id"));
+        v.scope = Some(crate::config::TopicScope::InfectiousDisease);
+        let f = build_filter(&v, 2020, 2025).unwrap();
+        assert!(f.ends_with(",primary_topic.subfield.id:2725|2406|2405|2713"));
     }
 
     // Live smoke test against the real OpenAlex API. Ignored by default so the

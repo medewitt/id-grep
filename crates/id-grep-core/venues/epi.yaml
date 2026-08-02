@@ -72,3 +72,12 @@ venues:
     pubmed_journal: BMC Infect Dis
     aliases: [bmc-id, bmc-infect-dis]
     tags: [epi]
+
+  - id: Nat-Med
+    name: Nature Medicine
+    openalex_source_id: S203256638
+    issn: ["1078-8956", "1546-170X", "1744-7933"]
+    aliases: [nat-med, nature-medicine, naturemed]
+    tags: [epi]
+    # General-interest medical journal: restrict ingest to ID-relevant works.
+    scope: infectious-disease

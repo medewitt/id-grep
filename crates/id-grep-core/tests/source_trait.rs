@@ -40,6 +40,7 @@ fn venue(id: &str) -> Venue {
         aliases: Vec::new(),
         rank: None,
         tags: vec!["epi".into()],
+        scope: None,
     }
 }
 

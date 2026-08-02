@@ -83,7 +83,16 @@ id-grep --format json '* WHERE venue:plos-ntd AND year:2023'
 ```
 
 Unknown venue/tag/rank → exit 4. List what exists by reading the catalog bundles
-under `crates/id-grep-core/venues/` (`epi`, `modelling`, `ecoevo`, `preprints`).
+under `crates/id-grep-core/venues/` (`epi`, `modelling`, `ecoevo`, `general`,
+`preprints`). `general` (Nature, Science) loads by default; `preprints` is
+opt-in — add it to `bundles:` in the user config or pass `--bundle preprints`
+on `update` to fetch it.
+
+Multidisciplinary venues (Nature, Science, Nature Medicine, PLOS ONE, The
+American Naturalist) carry `scope: infectious-disease` in the catalog, so
+`update` fetches only works whose primary OpenAlex topic sits in an
+infectious-disease subfield (Infectious Diseases, Virology, Parasitology,
+Epidemiology) rather than everything the journal publishes.
 
 ## Zotero dedup
 
