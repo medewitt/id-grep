@@ -135,7 +135,7 @@ impl OpenAlex {
 
     pub fn with_base_url(base_url: &str, secrets: &Secrets) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("cs-grep/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("id-grep/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60))
             .build()

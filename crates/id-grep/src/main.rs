@@ -9,22 +9,22 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use cs_grep_core::abstracts::{EnrichResult, Enricher};
-use cs_grep_core::config::{Config, Paths, Secrets};
-use cs_grep_core::db::{Database, Search, Sort};
-use cs_grep_core::output::{self, Column, Format};
-use cs_grep_core::query;
-use cs_grep_core::sources::{dblp::Dblp, openalex::OpenAlex, pubmed::PubMed, Source};
-use cs_grep_core::zotero::{self, ZoteroLibrary};
-use cs_grep_core::Paper;
+use id_grep_core::abstracts::{EnrichResult, Enricher};
+use id_grep_core::config::{Config, Paths, Secrets};
+use id_grep_core::db::{Database, Search, Sort};
+use id_grep_core::output::{self, Column, Format};
+use id_grep_core::query;
+use id_grep_core::sources::{dblp::Dblp, openalex::OpenAlex, pubmed::PubMed, Source};
+use id_grep_core::zotero::{self, ZoteroLibrary};
+use id_grep_core::Paper;
 
 /// Upper bound for dblp year filters; papers never exceed this.
 const MAX_YEAR: i32 = 2100;
 
 #[derive(Parser)]
 #[command(
-    name = "cs-grep",
-    about = "Search computer science research literature",
+    name = "id-grep",
+    about = "Search infectious-disease ecology, evolution & epidemiology literature",
     version
 )]
 struct Cli {
@@ -88,9 +88,9 @@ impl Cli {
 enum Command {
     /// Create the data/config directories and an empty database.
     Init,
-    /// Fetch paper metadata from dblp (incremental, idempotent).
+    /// Fetch paper metadata from the configured sources (incremental, idempotent).
     Update(UpdateArgs),
-    /// Fill missing abstracts on the existing database (no dblp re-fetch).
+    /// Fill missing abstracts on the existing database (no re-fetch of metadata).
     Enrich(EnrichArgs),
 }
 
@@ -207,7 +207,7 @@ fn open_db(cli: &Cli, paths: &Paths) -> Result<Database> {
     let path = db_path(cli, paths);
     Database::open_existing(&path).with_context(|| {
         format!(
-            "no database at {}; run `cs-grep init` then `cs-grep update`",
+            "no database at {}; run `id-grep init` then `id-grep update`",
             path.display()
         )
     })
@@ -222,11 +222,11 @@ fn cmd_init(cli: &Cli, paths: &Paths) -> Result<()> {
     Database::open(&path).context("creating database")?;
     let config_path = config_path(cli, paths);
     write_default_config(&config_path)?;
-    log_header("cs-grep initialized");
+    log_header("id-grep initialized");
     log_field("database", path.display());
     log_field("config", config_path.display());
     log_blank();
-    log_field("next", "`cs-grep update`");
+    log_field("next", "`id-grep update`");
     Ok(())
 }
 
@@ -291,7 +291,7 @@ pub(crate) fn build_search(
     sort: SortMode,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> cs_grep_core::Result<Search> {
+) -> id_grep_core::Result<Search> {
     let parsed = query::parse(raw_query, config)?;
     let sort = match sort {
         SortMode::Relevance => Sort::Relevance,
@@ -321,7 +321,7 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
     };
     let min_year = args.since.unwrap_or(config.defaults.min_year);
 
-    log_header("cs-grep update");
+    log_header("id-grep update");
     log_field("bundles", config.bundles.join(", "));
     log_field("venues", venue_ids.len());
     log_field("since", min_year);
@@ -527,7 +527,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("cs-grep-{name}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!("id-grep-{name}-{}-{nanos}", std::process::id()))
     }
 
     #[test]
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn enrich_options_are_parsed() {
         let cli = Cli::try_parse_from([
-            "cs-grep",
+            "id-grep",
             "enrich",
             "--bundle",
             "epi,modelling",
@@ -582,21 +582,21 @@ mod tests {
     #[test]
     fn search_output_options_are_parsed_and_rejected_with_commands() {
         let cli =
-            Cli::try_parse_from(["cs-grep", "--format", "json", "--fields", "year,title"]).unwrap();
+            Cli::try_parse_from(["id-grep", "--format", "json", "--fields", "year,title"]).unwrap();
         assert_eq!(cli.format, Some(Format::Json));
         assert_eq!(cli.fields, vec![Column::Year, Column::Title]);
 
-        let cli = Cli::try_parse_from(["cs-grep", "--format", "json", "update"]).unwrap();
+        let cli = Cli::try_parse_from(["id-grep", "--format", "json", "update"]).unwrap();
         assert!(reject_search_args_for_subcommands(&cli).is_err());
 
-        let cli = Cli::try_parse_from(["cs-grep", "--db", "papers.db", "update"]).unwrap();
+        let cli = Cli::try_parse_from(["id-grep", "--db", "papers.db", "update"]).unwrap();
         assert!(reject_search_args_for_subcommands(&cli).is_ok());
     }
 
     #[test]
     fn bundle_override_limits_venue_resolution() {
         let cli = Cli::try_parse_from([
-            "cs-grep",
+            "id-grep",
             "update",
             "--bundle",
             "epi,modelling",

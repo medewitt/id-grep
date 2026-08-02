@@ -1,5 +1,5 @@
 [package]
-name = "cs-grep-core"
+name = "id-grep-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

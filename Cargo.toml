@@ -1,14 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/cs-grep-core", "crates/cs-grep"]
+members = ["crates/id-grep-core", "crates/id-grep"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
-description = "Fast local search across computer science research literature"
+description = "Fast local search across infectious-disease ecology, evolution, and epidemiology literature"
 license = "MIT"
-repository = "https://github.com/philippnormann/cs-grep"
+repository = "https://github.com/medewitt/cs-grep"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

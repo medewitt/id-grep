@@ -336,7 +336,7 @@ pub struct Paths {
 
 impl Paths {
     pub fn resolve() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from("", "", "cs-grep")
+        let dirs = directories::ProjectDirs::from("", "", "id-grep")
             .ok_or_else(|| Error::Config("cannot determine home directory".into()))?;
         Ok(Self {
             data_dir: dirs.data_dir().to_path_buf(),

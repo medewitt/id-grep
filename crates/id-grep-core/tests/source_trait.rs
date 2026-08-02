@@ -1,10 +1,10 @@
 //! The `Source` abstraction can drive ingestion end-to-end with any backend,
 //! independent of DBLP. Proves the pivot's ingestion is source-agnostic.
 
-use cs_grep_core::config::Venue;
-use cs_grep_core::db::{Database, Search};
-use cs_grep_core::sources::Source;
-use cs_grep_core::{Paper, Result};
+use id_grep_core::config::Venue;
+use id_grep_core::db::{Database, Search};
+use id_grep_core::sources::Source;
+use id_grep_core::{Paper, Result};
 
 /// A stand-in ingestion backend that returns canned records (no network).
 struct FakeSource;

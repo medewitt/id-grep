@@ -22,7 +22,7 @@ pub const SOURCE_NAME: &str = "pubmed";
 
 const DEFAULT_BASE_URL: &str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 /// Identifies this client to NCBI (recommended alongside `email`/`api_key`).
-const TOOL: &str = "cs-grep";
+const TOOL: &str = "id-grep";
 /// PMIDs requested per `esearch` page.
 const ESEARCH_RETMAX: usize = 500;
 /// PMIDs fetched per `efetch` call (keeps the GET URL comfortably short).
@@ -456,7 +456,7 @@ impl PubMed {
 
     pub fn with_base_url(base_url: &str, secrets: &Secrets) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("cs-grep/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("id-grep/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60))
             .build()

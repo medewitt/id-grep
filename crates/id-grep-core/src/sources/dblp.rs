@@ -154,7 +154,7 @@ impl Default for Dblp {
 impl Dblp {
     pub fn new(endpoint: &str) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("cs-grep/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("id-grep/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()

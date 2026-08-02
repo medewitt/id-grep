@@ -404,39 +404,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cs-grep"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "cs-grep-core",
- "ratatui",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "cs-grep-core"
-version = "0.1.0"
-dependencies = [
- "csv",
- "directories",
- "dotenvy",
- "futures",
- "quick-xml",
- "reqwest",
- "rusqlite",
- "scraper",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "csscolorparser"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1164,6 +1131,39 @@ name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+
+[[package]]
+name = "id-grep"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "id-grep-core",
+ "ratatui",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "id-grep-core"
+version = "0.1.0"
+dependencies = [
+ "csv",
+ "directories",
+ "dotenvy",
+ "futures",
+ "quick-xml",
+ "reqwest",
+ "rusqlite",
+ "scraper",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "ident_case"

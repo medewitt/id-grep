@@ -1,0 +1,29 @@
+id-grep
+=======
+
+id-grep is a local literature-search tool for infectious-disease ecology,
+evolution, and epidemiology. It is a rebrand and redirection of `cs-grep`
+toward the infectious-disease domain; the license is unchanged (see LICENSE).
+
+Upstream lineage
+----------------
+- Derived from cs-grep by Philipp Normann — https://github.com/philippnormann/cs-grep
+  (itself originally a security-focused tool, "sec-grep").
+
+Data sources
+------------
+id-grep queries and attributes the following services. Please respect each
+provider's terms of use and rate limits, and set a contact email where
+requested (see `.env.example`).
+
+- OpenAlex — https://openalex.org (primary ingestion; polite pool via OPENALEX_MAILTO)
+- NCBI PubMed / E-utilities — https://www.ncbi.nlm.nih.gov/books/NBK25501/
+  (complementary ingestion; NCBI_API_KEY / NCBI_EMAIL)
+- Crossref — https://www.crossref.org (abstract enrichment)
+- Semantic Scholar — https://www.semanticscholar.org (abstract enrichment)
+- DBLP — https://dblp.org (legacy computer-science ingestion, retained but unused
+  by the default catalog)
+
+Publisher abstract enrichment additionally fetches public landing pages
+(PLOS, Elsevier, OUP, Royal Society, bioRxiv/medRxiv, CDC/EID, PNAS, Wiley)
+subject to the tool's SSRF and size safeguards.
