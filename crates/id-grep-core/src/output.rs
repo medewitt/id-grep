@@ -300,6 +300,50 @@ mod tests {
         assert_eq!(back, sample());
     }
 
+    /// Byte-for-byte snapshot of the `--format json` envelope on a single
+    /// fixed record. This pins the exact shape documented in CLAUDE.md
+    /// (schema_version/count/results, field names and order); any change to
+    /// the JSON output -- a renamed field, a reordered field, a different
+    /// pretty-print style -- fails this test even if every other assertion
+    /// (which mostly checks substrings or round-trips) still passes.
+    #[test]
+    fn json_output_is_byte_for_byte_stable() {
+        let paper = Paper {
+            key: "W2001".into(),
+            source: "openalex".into(),
+            venue: "Epidemics".into(),
+            year: 2021,
+            title: "Estimating the basic reproduction number".into(),
+            authors: "Ada Lovelace, Alan Turing".into(),
+            doi: Some("10.1016/j.epidem.2021.100123".into()),
+            url: Some("https://doi.org/10.1016/j.epidem.2021.100123".into()),
+            abstract_text: Some("We estimate R0.".into()),
+        };
+        let j = render(&[paper], Format::Json, None).unwrap();
+        // NB: `serde_json::json!` (without the `preserve_order` feature) sorts
+        // object keys alphabetically, so this does not match the field
+        // declaration order in `Paper` / the CLAUDE.md example -- that's
+        // expected and exactly what this test pins down.
+        let expected = r#"{
+  "count": 1,
+  "results": [
+    {
+      "abstract": "We estimate R0.",
+      "authors": "Ada Lovelace, Alan Turing",
+      "doi": "10.1016/j.epidem.2021.100123",
+      "key": "W2001",
+      "source": "openalex",
+      "title": "Estimating the basic reproduction number",
+      "url": "https://doi.org/10.1016/j.epidem.2021.100123",
+      "venue": "Epidemics",
+      "year": 2021
+    }
+  ],
+  "schema_version": 1
+}"#;
+        assert_eq!(j, expected);
+    }
+
     #[test]
     fn csv_header_and_values() {
         let c = render(&sample(), Format::Csv, None).unwrap();

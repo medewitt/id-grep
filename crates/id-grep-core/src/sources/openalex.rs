@@ -83,7 +83,10 @@ fn map_work(work: &Value, venue_id: &str) -> Option<Paper> {
 }
 
 /// Parse one `/works` response page into papers plus the next cursor (if any).
-fn parse_works_page(json: &Value, venue_id: &str) -> (Vec<Paper>, Option<String>) {
+///
+/// Public so integration tests can drive the OpenAlex ingestion path with a
+/// canned JSON page, offline, without duplicating the mapping logic.
+pub fn parse_works_page(json: &Value, venue_id: &str) -> (Vec<Paper>, Option<String>) {
     let papers = json
         .get("results")
         .and_then(|v| v.as_array())
