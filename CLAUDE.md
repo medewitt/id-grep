@@ -49,8 +49,9 @@ id-grep --format json --quiet 'transmission WHERE venue:Epidemics'
 ```
 
 Check `schema_version` before parsing; it bumps on any incompatible change.
-On error under `--format json`, stdout is empty and stderr carries
-`{"schema_version":1,"error":"…"}`.
+Object key order is **not** significant — parse by key, not by position (the
+serializer currently emits keys alphabetically). On error under `--format json`,
+stdout is empty and stderr carries `{"schema_version":1,"error":"…"}`.
 
 ## Exit codes (branch on these)
 
