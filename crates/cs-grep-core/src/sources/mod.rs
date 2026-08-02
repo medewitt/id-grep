@@ -10,6 +10,7 @@ use crate::{Paper, Result};
 
 pub mod dblp;
 pub mod openalex;
+pub mod pubmed;
 
 /// A backend that fetches paper metadata for a venue within a year range.
 ///

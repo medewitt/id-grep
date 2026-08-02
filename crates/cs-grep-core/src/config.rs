@@ -301,6 +301,10 @@ pub struct Secrets {
     pub semantic_scholar_key: Option<String>,
     pub openreview_username: Option<String>,
     pub openreview_password: Option<String>,
+    /// NCBI E-utilities API key (raises the PubMed rate limit to 10 req/s).
+    pub ncbi_api_key: Option<String>,
+    /// Contact email sent with NCBI E-utilities requests.
+    pub ncbi_email: Option<String>,
 }
 
 impl Secrets {
@@ -313,6 +317,8 @@ impl Secrets {
             semantic_scholar_key: non_empty_env("SEMANTIC_SCHOLAR_S2_KEY"),
             openreview_username: non_empty_env("OPENREVIEW_USERNAME"),
             openreview_password: non_empty_env("OPENREVIEW_PASSWORD"),
+            ncbi_api_key: non_empty_env("NCBI_API_KEY"),
+            ncbi_email: non_empty_env("NCBI_EMAIL"),
         }
     }
 }
