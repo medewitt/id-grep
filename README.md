@@ -1,209 +1,257 @@
-# cs-grep
+# id-grep
 
-Fast, local search across computer science research literature.
+Fast, local search across infectious-disease ecology, evolution & epidemiology
+literature.
 
-![cs-grep TUI](assets/tui.png)
+![id-grep TUI](assets/tui.png)
 
-`cs-grep` builds a local SQLite/FTS5 index from DBLP and gives you a clean CLI
-and TUI for searching papers with an expressive query language across title,
-authors, abstract, venue, year, rank, tag, and DOI.
+`id-grep` builds a local SQLite/FTS5 index of paper metadata — ingested from
+[OpenAlex](https://openalex.org) (primary) and [PubMed](https://www.ncbi.nlm.nih.gov/books/NBK25501/)
+(complementary), with optional abstract enrichment and Zotero-aware
+deduplication — and gives you a clean CLI and TUI for searching it with an
+expressive query language across title, authors, abstract, venue, year, and
+tag.
 
-## Why
-
-- Search across configurable computer science venue catalogs.
-- Keep the corpus local and query it quickly with SQLite/FTS5.
-- Search in the CLI or TUI, and export CSV, JSON, or BibTeX for scripts.
+`id-grep` is a rebrand and re-target of [`cs-grep`](https://github.com/philippnormann/cs-grep)
+away from computer-science venues and toward infectious-disease research. See
+[`NOTICE`](NOTICE) for the full upstream lineage and data-source attribution.
 
 ## Install
 
-Requires Rust 1.95 or newer.
+Requires the Rust toolchain, edition 2021, rustc 1.95 or newer.
+
+From a local checkout:
 
 ```sh
-cargo install --git https://github.com/philippnormann/cs-grep cs-grep
-```
-
-Or from a local checkout:
-
-```sh
-cargo install --path crates/cs-grep
+cargo install --path crates/id-grep
 ```
 
 Cargo installs to `~/.cargo/bin` on macOS/Linux and
 `%USERPROFILE%\.cargo\bin` on Windows. Make sure that directory is on `PATH`.
 
-Or use [`nix`](https://nixos.org/):
+Or build with [Nix](https://nixos.org/):
 
 ```sh
-nix run "github:philippnormann/cs-grep" -- <arguments> # run once
-nix shell "github:philippnormann/cs-grep"              # add to PATH
+nix build
 ```
 
-## Use
+For development, install [`just`](https://github.com/casey/just)
+(`cargo install just`) to drive the build/test recipes in the `justfile`.
+
+## Quickstart
 
 ```sh
-cs-grep init
-cs-grep update --since 2018
-cs-grep --tui
+id-grep init                              # one-time: create the DB + config
+id-grep update --bundle epi --since 2020  # fetch metadata (network)
+id-grep enrich                            # fill in missing abstracts (network)
+id-grep 'transmission WHERE venue:Epidemics'
 ```
 
-In the TUI, use `Tab` to cycle sort modes, arrow keys to move, and `Enter` to
-open the selected paper URL.
+`update` and `enrich` need network access to reach OpenAlex/PubMed and the
+abstract-enrichment sources. Querying an already-built index is entirely
+offline.
 
-Sort CLI results with `--sort relevance`, `--sort year`, `--sort venue`, or
-`--sort rank`.
+## The catalog
 
-Search from the shell:
+Venue catalogs are grouped into bundles that `update` and `enrich` ingest
+from:
+
+| Bundle | Contents | Loaded by default? |
+|---|---|---|
+| `epi` | Epidemiology & clinical infectious-disease journals (e.g. JID, Lancet ID, EID, CID, AJE, IJE) | yes |
+| `modelling` | Mathematical/computational epidemiology (e.g. Epidemics, PLoS Computational Biology, PLoS NTDs, Journal of Theoretical Biology) | yes |
+| `ecoevo` | Disease ecology & evolution (e.g. Ecology Letters, Journal of Animal Ecology, Molecular Biology and Evolution, Virus Evolution, TREE) | yes |
+| `preprints` | bioRxiv, medRxiv | opt-in only |
+
+Venues are keyed by ISSN (or, for preprint servers with no ISSN, an OpenAlex
+source id) and resolve through PubMed's NLM journal abbreviation where
+available. Each venue also ships handy short aliases you can use in queries
+and on the command line, e.g. `lancet-id`, `eid`, `plos-cb`, `plos-ntd`, and
+`tree`.
+
+The bundled catalog lives in `crates/id-grep-core/venues/*.yaml`. ISSNs there
+are drawn from public sources and are not independently re-verified in this
+repo; if a venue returns no records on `update`, spot-check its ISSN against
+OpenAlex's `/sources` endpoint.
+
+Select a non-default combination of bundles per invocation:
 
 ```sh
-cs-grep 'title:fuzzing WHERE venue:ndss AND year:2020-'
-cs-grep '("side channel" OR cache) WHERE venue:CCS OR venue:SP'
-cs-grep '* WHERE doi:10.1145' --fields venue,year,title,doi
+id-grep update --bundle epi,modelling,preprints
+id-grep enrich --bundle ecoevo
 ```
 
-More examples:
+To add or override venues, extend the user config created by `id-grep init`:
 
-```sh
-# Recent malware-detection papers in A/A* venues
-cs-grep 'malware detection WHERE year:2022- AND (rank:A OR rank:A*)' --sort year
+- Linux: `~/.config/id-grep/config.yaml`
+- macOS: `~/Library/Application Support/id-grep/config.yaml`
+- Windows: `%APPDATA%\id-grep\config.yaml`
 
-# Export matching papers as BibTeX
-cs-grep 'kernel fuzz* WHERE venue:USENIX-SEC' --format bibtex > papers.bib
-
-# Script-friendly JSON output
-cs-grep 'large language model WHERE year:2023-' --format json
-
-# Limit output for quick triage
-cs-grep '(ransomware OR botnet) WHERE year:2020-' --limit 20
-
-# Search a custom database path
-cs-grep --db ./papers.db 'symbolic execution WHERE venue:ccs'
-```
-
-## Query Language
-
-Queries have a full-text expression followed by optional metadata filters:
-
-```sh
-cs-grep '(malware OR botnet) WHERE year:2020- AND NOT venue:CCS'
-```
-
-- Both sides support `AND`, `OR`, `NOT`, parentheses, and implicit `AND`.
-- Text supports phrases, trailing prefixes such as `fuzz*`, and the fields
-  `title:`, `author:`, and `abstract:`.
-- `WHERE` supports `venue:`, `year:`, `rank:`, `tag:`, and `doi:`.
-- `*` matches all papers when only metadata filters are needed.
-- Year values can be `2020`, `2018-2024`, `2020-`, or `-2019`.
-
-Text `NOT` requires a positive text term; metadata filters can be negated
-directly.
-
-```sh
-cs-grep '* WHERE tag:ml AND tag:security'
-cs-grep '* WHERE tag:ml OR tag:security'
-```
-
-## Bundles and Tags
-
-Bundles choose which venue catalogs `update` and `enrich` process. Tags filter
-papers by venue family during search. Bundled venues use the broad tags
-`security`, `ml`, `nlp`, `cv`, and `se`; custom venues can define additional
-tags.
-
-```sh
-cs-grep update --bundle security,ml
-cs-grep enrich --bundle ml
-```
-
-```sh
-# ML venue papers
-cs-grep 'mechanistic interpretability WHERE tag:ml AND year:2023-'
-
-# Papers from ML-security venues
-cs-grep '(prompt injection OR jailbreak) WHERE tag:ml AND tag:security'
-```
-
-## Venues
-
-Bundled venue catalogs live in `crates/cs-grep-core/venues/`.
-
-After `cs-grep init`, you can extend or override the catalog with a user
-`config.yaml`:
-
-- macOS: `~/Library/Application Support/cs-grep/config.yaml`
-- Linux: `~/.config/cs-grep/config.yaml`
-- Windows: `%APPDATA%\cs-grep\config.yaml`
-
-You can also pass a specific file with `--config path/to/config.yaml`.
-
-`bundles` selects bundled venue sets for subfields. User venues are always
-merged after selected bundles by `id`: reuse an existing `id` to override a
-bundled venue, or add a new `id` to extend the catalog.
+(Locations are resolved by the `directories` crate; pass `--config
+path/to/config.yaml` to use a specific file instead.)
 
 ```yaml
-bundles: [security, ml, se]
+bundles: [epi, modelling, ecoevo]
 
 defaults:
-  min_year: 2018
+  min_year: 2000
 
 venues:
-  - id: DIMVA
-    name: Conference on Detection of Intrusions and Malware & Vulnerability Assessment
-    dblp_stream: conf/dimva
-    aliases: [dimva]
-    rank: B
-    tags: [systems, network, malware]
+  - id: MyJournal
+    name: My Custom Journal
+    issn: ["0000-0000"]
+    aliases: [myjournal]
+    tags: [epi]
 ```
 
+User venues are merged after the selected bundles by `id`: reuse an existing
+`id` to override a bundled venue, or add a new `id` to extend the catalog.
 Then ingest and search it:
 
 ```sh
-cs-grep update --venue DIMVA
-cs-grep 'malware WHERE venue:DIMVA'
+id-grep update --venue MyJournal
+id-grep 'outbreak WHERE venue:MyJournal'
 ```
 
-`dblp_stream` is the DBLP stream id used by the RDF endpoint, such as
-`conf/dimva`.
+## Query language
 
-## Abstracts
-
-Abstract enrichment is optional, cached, and best-effort. cs-grep uses paper
-DOIs and DBLP paper URLs to find abstracts.
+Queries have a full-text expression, followed by optional metadata filters
+after `WHERE`:
 
 ```sh
-cs-grep enrich --jobs 8
+id-grep 'text-expression WHERE metadata-filters'
 ```
 
-No API keys are required, but keys can improve rate limits and coverage.
+- Text supports bare terms (implicit `AND`), `OR`, `NOT`, parentheses,
+  `"quoted phrases"`, trailing prefixes such as `spillover*`, and the
+  field scopes `title:`, `author:`, and `abstract:`. `*` alone matches every
+  paper (use it with a `WHERE` clause).
+- Metadata filters support `venue:<id|alias>`, `tag:<tag>`, `doi:<substr>`,
+  and `year:` ranges (`year:2020`, `year:2018-2024`, `year:2020-`,
+  `year:-2019`), combined with `AND`/`OR`/`NOT`/parentheses. Text `NOT`
+  requires a positive text term; metadata filters can be negated directly.
 
-| Variable | Used for | Get a key |
-|---|---|---|
-| `OPENALEX_API_KEY` | OpenAlex lookups | [openalex.org/settings/api](https://openalex.org/settings/api) |
-| `SEMANTIC_SCHOLAR_S2_KEY` | Semantic Scholar lookups | [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api) |
-| `OPENREVIEW_USERNAME` / `OPENREVIEW_PASSWORD` | OpenReview lookups | [OpenReview API docs](https://docs.openreview.net/getting-started/using-the-api/installing-and-instantiating-the-python-client) |
-
-Set them in the shell:
+Examples:
 
 ```sh
-export OPENALEX_API_KEY=...
-export SEMANTIC_SCHOLAR_S2_KEY=...
-export OPENREVIEW_USERNAME=...
-export OPENREVIEW_PASSWORD=...
+# Spillover/reservoir papers tagged as ecology work, since 2015
+id-grep 'spillover OR reservoir WHERE tag:ecology AND year:2015-'
+
+# A specific phrase, scoped to one venue
+id-grep '"basic reproduction number" WHERE venue:Epidemics'
+
+# Metadata-only filter: all PLoS NTD papers from 2023
+id-grep '* WHERE venue:plos-ntd AND year:2023'
+
+# Malaria papers, excluding a venue, sorted by year
+id-grep 'malaria WHERE year:2020- AND NOT venue:eid' --sort year
 ```
 
-Or place them in a local `.env` file:
+Sort results with `--sort relevance` (default), `--sort year`, or
+`--sort venue`. Launch the interactive TUI with `--tui` (`Tab` cycles sort
+modes, arrow keys move, `Enter` opens the selected paper's URL).
+
+## Output formats
+
+`--format` selects the output format: `table` (default), `json`, `csv`, or
+`bibtex`. Limit or choose columns with `--limit` and `--fields
+venue,year,title,doi`.
 
 ```sh
-OPENALEX_API_KEY=
-SEMANTIC_SCHOLAR_S2_KEY=
-OPENREVIEW_USERNAME=
-OPENREVIEW_PASSWORD=
+id-grep 'kernel* WHERE venue:tree' --format bibtex > papers.bib
+id-grep 'antimicrobial resistance WHERE year:2023-' --format json
+id-grep '(spillover OR reservoir) WHERE year:2020-' --limit 20
+id-grep --db ./papers.db 'symbolic epidemiology WHERE venue:AJE'
 ```
+
+`--format json` prints a single, versioned envelope on stdout:
+
+```json
+{
+  "schema_version": 1,
+  "count": 2,
+  "results": [
+    {
+      "key": "W123",
+      "source": "openalex",
+      "venue": "Epidemics",
+      "year": 2021,
+      "title": "…",
+      "authors": "Ada Lovelace, Alan Turing",
+      "doi": "10.1016/…",
+      "url": "https://…",
+      "abstract": "…"
+    }
+  ]
+}
+```
+
+Check `schema_version` before parsing; it only bumps on an incompatible
+change. On error under `--format json`, stdout is empty and stderr carries
+`{"schema_version":1,"error":"…"}` instead.
+
+Pass `--quiet` to suppress human-readable progress/logging on stderr; results
+still print on stdout. This, combined with `--format json`, is the pairing to
+use when driving `id-grep` from a script or agent.
+
+See [`CLAUDE.md`](CLAUDE.md) for the full agent-facing contract, including
+exit codes (`0` success, `1` generic error, `2` CLI usage error, `3` no
+results, `4` config/query error, `5` network/upstream failure).
+
+## Zotero
+
+Cross-reference search results against a local Zotero library and drop
+anything you already own:
+
+```sh
+id-grep --exclude-owned --zotero ~/Zotero 'malaria WHERE venue:plos-ntd'
+```
+
+`--zotero` defaults to `~/Zotero` if omitted. Matching is DOI-first, then
+normalized title. It's safe to run this while Zotero itself is open — the
+library's SQLite file is copied and opened read-only.
+
+## Configuration & credentials
+
+`id-grep init` creates a data directory (for `papers.db`) and a config
+directory (for `config.yaml`), resolved per-OS by the `directories` crate —
+see the paths listed under [The catalog](#the-catalog) above. Override either
+with `--db <path>` or `--config <path>`.
+
+No credentials are required to query an existing index. `update` and `enrich`
+can use optional credentials from the environment or a local `.env` file (see
+[`.env.example`](.env.example)):
+
+| Variable | Used for |
+|---|---|
+| `OPENALEX_MAILTO` | Contact email for OpenAlex's polite pool (recommended) |
+| `OPENALEX_API_KEY` | OpenAlex lookups |
+| `NCBI_API_KEY` / `NCBI_EMAIL` | Raise PubMed/NCBI E-utilities rate limits |
+| `SEMANTIC_SCHOLAR_S2_KEY` | Semantic Scholar abstract lookups |
+| `OPENREVIEW_USERNAME` / `OPENREVIEW_PASSWORD` | Dormant OpenReview source, unused by the default catalog |
 
 `.env` is loaded automatically when present.
 
-## Acknowledgements
+## Development
 
-Inspired by [top4grep](https://github.com/Kyle-Kyle/top4grep).
+```sh
+just check   # fmt-check + clippy (-D warnings) + the offline test suite
+```
+
+Network-dependent tests are `#[ignore]`d so `just check`/`just test` stay
+offline and deterministic; run them explicitly with `cargo test --
+--ignored` where OpenAlex/NCBI are reachable. See the `justfile` for other
+recipes (`just build`, `just run`, `just update <bundle>`, `just enrich`).
+
+## Credits & attribution
+
+- `id-grep` is derived from [`cs-grep`](https://github.com/philippnormann/cs-grep)
+  by Philipp Normann; see [`NOTICE`](NOTICE) for the full lineage.
+- Data sources: [OpenAlex](https://openalex.org) and
+  [PubMed](https://www.ncbi.nlm.nih.gov/books/NBK25501/) for ingestion;
+  [Crossref](https://www.crossref.org) and
+  [Semantic Scholar](https://www.semanticscholar.org) for abstract
+  enrichment. Please respect each provider's terms of use and rate limits.
 
 ## License
 

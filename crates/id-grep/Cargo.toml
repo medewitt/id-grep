@@ -1,0 +1,22 @@
+[package]
+name = "id-grep"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "id-grep"
+path = "src/main.rs"
+
+[dependencies]
+id-grep-core = { version = "0.1.0", path = "../id-grep-core" }
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+url.workspace = true

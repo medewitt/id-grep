@@ -1,0 +1,16 @@
+# Preprint servers (off by default; opt in with `--bundle preprints`).
+# Preprint servers have no ISSN, so they are keyed by OpenAlex source id.
+# Verify the source ids against OpenAlex `/sources` if a venue returns nothing:
+#   https://api.openalex.org/sources?search=biorxiv
+venues:
+  - id: bioRxiv
+    name: bioRxiv
+    openalex_source_id: S4306402567
+    aliases: [biorxiv]
+    tags: [preprint]
+
+  - id: medRxiv
+    name: medRxiv
+    openalex_source_id: S4306500886
+    aliases: [medrxiv]
+    tags: [preprint]

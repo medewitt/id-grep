@@ -1,5 +1,5 @@
 {
-  description = "cs-grep";
+  description = "id-grep";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -41,11 +41,11 @@
         let
           src = ./.;
           manifest = (pkgs.lib.importTOML "${src}/Cargo.toml").workspace.package;
-          csGrep =
+          idGrep =
             with pkgs;
             rustPlatform.buildRustPackage {
               inherit src;
-              name = "cs-grep";
+              name = "id-grep";
               version = manifest.version;
               cargoLock = {
                 lockFile = ./Cargo.lock;
@@ -64,13 +64,13 @@
           };
 
           packages = {
-            inherit csGrep;
-            default = csGrep;
+            inherit idGrep;
+            default = idGrep;
           };
 
           devShells.default = pkgs.mkShell {
             buildInputs =
-              csGrep.buildInputs
+              idGrep.buildInputs
               ++ (with pkgs; [
                 cargo
               ]);

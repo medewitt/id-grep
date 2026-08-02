@@ -1,0 +1,81 @@
+# Disease ecology and evolution journals.
+# ISSNs are from public sources; verify against OpenAlex `/sources` if a venue
+# returns no records on `update`.
+
+venues:
+  - id: Ecology
+    name: Ecology
+    issn: ["0012-9658", "1939-9170"]
+    pubmed_journal: Ecology
+    aliases: [ecology]
+    tags: [ecology]
+
+  - id: Ecol-Lett
+    name: Ecology Letters
+    issn: ["1461-023X", "1461-0248"]
+    pubmed_journal: Ecol Lett
+    aliases: [ecol-lett, ecology-letters]
+    tags: [ecology]
+
+  - id: J-Anim-Ecol
+    name: Journal of Animal Ecology
+    issn: ["0021-8790", "1365-2656"]
+    pubmed_journal: J Anim Ecol
+    aliases: [j-anim-ecol, jae]
+    tags: [ecology]
+
+  - id: Funct-Ecol
+    name: Functional Ecology
+    issn: ["0269-8463", "1365-2435"]
+    pubmed_journal: Funct Ecol
+    aliases: [funct-ecol]
+    tags: [ecology]
+
+  - id: Proc-R-Soc-B
+    name: Proceedings of the Royal Society B
+    issn: ["0962-8452", "1471-2954"]
+    pubmed_journal: Proc Biol Sci
+    aliases: [prsb, proc-r-soc-b, procb]
+    tags: [ecology, evolution]
+
+  - id: Evolution
+    name: Evolution
+    issn: ["0014-3820", "1558-5646"]
+    pubmed_journal: Evolution
+    aliases: [evolution]
+    tags: [evolution]
+
+  - id: MBE
+    name: Molecular Biology and Evolution
+    issn: ["0737-4038", "1537-1719"]
+    pubmed_journal: Mol Biol Evol
+    aliases: [mbe, mol-biol-evol]
+    tags: [evolution]
+
+  - id: Virus-Evol
+    name: Virus Evolution
+    issn: ["2057-1577"]
+    pubmed_journal: Virus Evol
+    aliases: [virus-evol, virusevol]
+    tags: [evolution]
+
+  - id: PLoS-Pathog
+    name: PLOS Pathogens
+    issn: ["1553-7366", "1553-7374"]
+    pubmed_journal: PLoS Pathog
+    aliases: [plos-path, plos-pathog, plospathogens]
+    tags: [ecology, evolution]
+
+  - id: Parasitology
+    name: Parasitology
+    issn: ["0031-1820", "1469-8161"]
+    pubmed_journal: Parasitology
+    aliases: [parasitology]
+    tags: [ecology]
+
+  - id: TREE
+    name: "Trends in Ecology & Evolution"
+    issn: ["0169-5347", "1872-8383"]
+    pubmed_journal: Trends Ecol Evol
+    aliases: [tree, trends-ecol-evol]
+    tags: [ecology, evolution]
