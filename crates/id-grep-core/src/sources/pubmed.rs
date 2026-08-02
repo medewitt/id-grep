@@ -591,6 +591,7 @@ mod tests {
             aliases: Vec::new(),
             rank: None,
             tags: Vec::new(),
+            scope: None,
         }
     }
 

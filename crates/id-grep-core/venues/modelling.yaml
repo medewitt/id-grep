@@ -30,6 +30,8 @@ venues:
     pubmed_journal: PLoS One
     aliases: [plos-one, plosone]
     tags: [modelling]
+    # Multidisciplinary megajournal: restrict ingest to ID-relevant works.
+    scope: infectious-disease
 
   - id: PLoS-NTD
     name: PLOS Neglected Tropical Diseases

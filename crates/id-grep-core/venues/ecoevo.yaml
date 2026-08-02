@@ -79,3 +79,14 @@ venues:
     pubmed_journal: Trends Ecol Evol
     aliases: [tree, trends-ecol-evol]
     tags: [ecology, evolution]
+
+  - id: Am-Nat
+    name: The American Naturalist
+    openalex_source_id: S122176235
+    issn: ["0003-0147", "1537-5323"]
+    aliases: [am-nat, amnat, american-naturalist]
+    tags: [ecology, evolution]
+    # General ecology/evolution journal: restrict ingest to disease-relevant
+    # works (disease-ecology papers classed under a non-ID primary topic are
+    # not captured; drop `scope` to ingest the full journal).
+    scope: infectious-disease

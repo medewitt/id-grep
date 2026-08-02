@@ -1,0 +1,24 @@
+# General-interest, multidisciplinary flagship journals.
+# These publish across all of science, so every venue here sets
+# `scope: infectious-disease` to ingest only ID-relevant works instead of the
+# whole journal. Opt-in: not part of the default bundle set (enable with
+# `--bundle general` or add `general` to `bundles` in config).
+# ISSNs / source ids are from public sources; verify against OpenAlex
+# `/sources` if a venue returns no records on `update`.
+
+venues:
+  - id: Nature
+    name: Nature
+    openalex_source_id: S137773608
+    issn: ["0028-0836", "1476-4687"]
+    aliases: [nature]
+    tags: [general]
+    scope: infectious-disease
+
+  - id: Science
+    name: Science
+    openalex_source_id: S3880285
+    issn: ["0036-8075", "0193-4511", "1095-9203"]
+    aliases: [science]
+    tags: [general]
+    scope: infectious-disease

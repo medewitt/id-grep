@@ -61,7 +61,14 @@ from:
 | `epi` | Epidemiology & clinical infectious-disease journals (e.g. JID, Lancet ID, EID, CID, AJE, IJE) | yes |
 | `modelling` | Mathematical/computational epidemiology (e.g. Epidemics, PLoS Computational Biology, PLoS NTDs, Journal of Theoretical Biology) | yes |
 | `ecoevo` | Disease ecology & evolution (e.g. Ecology Letters, Journal of Animal Ecology, Molecular Biology and Evolution, Virus Evolution, TREE) | yes |
+| `general` | General-interest flagship journals (Nature, Science), ID-scoped | yes |
 | `preprints` | bioRxiv, medRxiv | opt-in only |
+
+Multidisciplinary venues (Nature, Science, Nature Medicine, PLOS ONE, The
+American Naturalist) are scoped to infectious-disease topics at ingest, so
+`update` pulls only ID-relevant works rather than the entire journal. The scope
+uses the OpenAlex topic taxonomy (Infectious Diseases, Virology, Parasitology,
+and Epidemiology subfields); drop `scope` on a venue to ingest everything.
 
 Venues are keyed by ISSN (or, for preprint servers with no ISSN, an OpenAlex
 source id) and resolve through PubMed's NLM journal abbreviation where

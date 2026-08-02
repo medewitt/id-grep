@@ -801,6 +801,7 @@ mod tests {
                     aliases: Vec::new(),
                     rank: (!rank.is_empty()).then(|| rank.to_string()),
                     tags: Vec::new(),
+                    scope: None,
                 })
                 .collect(),
         }

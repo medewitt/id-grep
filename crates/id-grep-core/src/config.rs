@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
-const DEFAULT_BUNDLES: &[&str] = &["epi", "modelling", "ecoevo"];
+const DEFAULT_BUNDLES: &[&str] = &["epi", "modelling", "ecoevo", "general"];
 const BUNDLED_VENUES: &[(&str, &str)] = &[
     ("epi", include_str!("../venues/epi.yaml")),
     ("modelling", include_str!("../venues/modelling.yaml")),
     ("ecoevo", include_str!("../venues/ecoevo.yaml")),
     ("preprints", include_str!("../venues/preprints.yaml")),
+    ("general", include_str!("../venues/general.yaml")),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +40,30 @@ pub struct Venue {
     pub rank: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Optional topical scoping applied at ingest. Multidisciplinary venues
+    /// (e.g. Nature, Science, PLOS ONE) set this so only on-topic works are
+    /// fetched instead of everything the journal publishes. OpenAlex only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<TopicScope>,
+}
+
+/// Ingest-time topic restriction for multidisciplinary venues.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TopicScope {
+    /// Keep only works whose primary OpenAlex topic sits in an
+    /// infectious-disease subfield: Infectious Diseases (2725),
+    /// Virology (2406), Parasitology (2405), or Epidemiology (2713).
+    InfectiousDisease,
+}
+
+impl TopicScope {
+    /// OpenAlex `filter` fragment (no leading comma) enforcing this scope.
+    pub fn openalex_filter(self) -> &'static str {
+        match self {
+            TopicScope::InfectiousDisease => "primary_topic.subfield.id:2725|2406|2405|2713",
+        }
+    }
 }
 
 impl Venue {
@@ -374,6 +399,7 @@ mod tests {
             aliases: Vec::new(),
             rank: (!rank.is_empty()).then(|| rank.to_string()),
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            scope: None,
         }
     }
 
@@ -404,7 +430,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             actual_tags,
-            ["ecology", "epi", "evolution", "modelling"]
+            ["ecology", "epi", "evolution", "general", "modelling"]
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>()
         );
@@ -421,6 +447,8 @@ mod tests {
         assert!(by_tag("modelling").contains("PLoS-Comp-Biol"));
         assert!(by_tag("ecology").contains("Ecology"));
         assert!(by_tag("evolution").contains("MBE"));
+        assert!(by_tag("general").contains("Nature"));
+        assert!(by_tag("general").contains("Science"));
 
         // Every venue has at least one tag and no duplicates.
         for venue in &cfg.venues {
@@ -506,10 +534,11 @@ venues:
         let yaml = Config::default_user_config_yaml().unwrap();
         assert!(!yaml.contains("venues: []"));
         let cfg = Config::from_yaml(&yaml).unwrap();
-        assert_eq!(cfg.bundles, vec!["epi", "modelling", "ecoevo"]);
+        assert_eq!(cfg.bundles, vec!["epi", "modelling", "ecoevo", "general"]);
         assert_eq!(cfg.defaults.min_year, 2000);
         assert!(cfg.venue("Epidemics").is_some());
         assert!(cfg.venue("Ecology").is_some());
+        assert!(cfg.venue("Science").is_some());
     }
 
     #[test]
