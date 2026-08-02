@@ -51,7 +51,7 @@ enum AbstractSource {
 
 /// Reconstruct plain text from an OpenAlex `abstract_inverted_index`,
 /// or read a plain `abstract` string if present.
-fn abstract_from_openalex(work: &Value) -> Option<String> {
+pub(crate) fn abstract_from_openalex(work: &Value) -> Option<String> {
     if let Some(s) = work.get("abstract").and_then(|v| v.as_str()) {
         return non_empty_text(s);
     }
@@ -247,7 +247,7 @@ fn usable_abstract_for_title(raw: String, title: &str) -> Option<String> {
     (!titles_match(&abstract_text, title)).then_some(abstract_text)
 }
 
-fn normalized_doi(raw: &str) -> Option<String> {
+pub(crate) fn normalized_doi(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_end_matches('.');
     let lower = trimmed.to_ascii_lowercase();
     for prefix in [

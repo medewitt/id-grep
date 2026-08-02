@@ -14,7 +14,7 @@ use cs_grep_core::config::{Config, Paths, Secrets};
 use cs_grep_core::db::{Database, Search, Sort};
 use cs_grep_core::output::{self, Column, Format};
 use cs_grep_core::query;
-use cs_grep_core::sources::{dblp::Dblp, Source};
+use cs_grep_core::sources::{dblp::Dblp, openalex::OpenAlex, Source};
 use cs_grep_core::Paper;
 
 /// Upper bound for dblp year filters; papers never exceed this.
@@ -301,6 +301,8 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
     log_field("since", min_year);
     log_blank();
 
+    let secrets = Secrets::load();
+    let openalex = OpenAlex::new(&secrets);
     let dblp = Dblp::default();
     let mut total = 0usize;
     let mut failed = Vec::new();
@@ -308,7 +310,14 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
         let venue = config.venue(id).expect("resolved venue");
         eprint!("  {id:<12} ");
         let _ = std::io::stderr().flush();
-        match dblp.fetch_venue(venue, min_year, MAX_YEAR).await {
+        // Prefer OpenAlex when the venue carries an OpenAlex id or ISSN; fall
+        // back to DBLP for CS venues that only have a dblp_stream.
+        let result = if venue.openalex_source_id.is_some() || !venue.issn.is_empty() {
+            openalex.fetch_venue(venue, min_year, MAX_YEAR).await
+        } else {
+            dblp.fetch_venue(venue, min_year, MAX_YEAR).await
+        };
+        match result {
             Ok(papers) => {
                 let n = db.upsert_papers(&papers)?;
                 total += papers.len();

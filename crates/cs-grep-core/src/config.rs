@@ -295,6 +295,8 @@ fn rank_sort_key(rank: &str) -> u8 {
 #[derive(Debug, Clone, Default)]
 pub struct Secrets {
     pub openalex_api_key: Option<String>,
+    /// Contact email for OpenAlex's polite pool (faster, more reliable).
+    pub openalex_mailto: Option<String>,
     pub semantic_scholar_key: Option<String>,
     pub openreview_username: Option<String>,
     pub openreview_password: Option<String>,
@@ -306,6 +308,7 @@ impl Secrets {
         let _ = dotenvy::dotenv();
         Self {
             openalex_api_key: non_empty_env("OPENALEX_API_KEY"),
+            openalex_mailto: non_empty_env("OPENALEX_MAILTO"),
             semantic_scholar_key: non_empty_env("SEMANTIC_SCHOLAR_S2_KEY"),
             openreview_username: non_empty_env("OPENREVIEW_USERNAME"),
             openreview_password: non_empty_env("OPENREVIEW_PASSWORD"),
