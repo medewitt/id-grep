@@ -15,6 +15,7 @@ use cs_grep_core::db::{Database, Search, Sort};
 use cs_grep_core::output::{self, Column, Format};
 use cs_grep_core::query;
 use cs_grep_core::sources::{dblp::Dblp, openalex::OpenAlex, Source};
+use cs_grep_core::zotero::{self, ZoteroLibrary};
 use cs_grep_core::Paper;
 
 /// Upper bound for dblp year filters; papers never exceed this.
@@ -54,6 +55,10 @@ struct Cli {
     #[arg(long)]
     tui: bool,
 
+    /// Drop results already in your Zotero library (uses --zotero or ~/Zotero).
+    #[arg(long)]
+    exclude_owned: bool,
+
     /// Override database path.
     #[arg(long, global = true)]
     db: Option<PathBuf>,
@@ -61,6 +66,10 @@ struct Cli {
     /// Override user config.yaml path.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+
+    /// Path to a Zotero data directory (the folder containing zotero.sqlite).
+    #[arg(long, global = true, value_name = "DIR")]
+    zotero: Option<PathBuf>,
 }
 
 impl Cli {
@@ -71,6 +80,7 @@ impl Cli {
             || self.limit.is_some()
             || !self.fields.is_empty()
             || self.tui
+            || self.exclude_owned
     }
 }
 
@@ -242,7 +252,12 @@ fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
         cli.limit,
         None,
     )?;
-    let papers = db.search(&search)?;
+    let mut papers = db.search(&search)?;
+
+    if cli.exclude_owned {
+        let library = open_zotero_library(cli)?;
+        papers.retain(|paper| !library.is_owned(paper));
+    }
 
     let columns = (!cli.fields.is_empty()).then_some(cli.fields.as_slice());
     let format = cli.format.unwrap_or(Format::Table);
@@ -257,6 +272,17 @@ fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
         eprintln!("results    {}", papers.len());
     }
     Ok(())
+}
+
+fn open_zotero_library(cli: &Cli) -> Result<ZoteroLibrary> {
+    let dir = match &cli.zotero {
+        Some(dir) => dir.clone(),
+        None => zotero::default_data_dir().context(
+            "no Zotero library found in ~/Zotero; pass its location with --zotero <DIR>",
+        )?,
+    };
+    ZoteroLibrary::open(&dir)
+        .with_context(|| format!("reading Zotero library at {}", dir.display()))
 }
 
 pub(crate) fn build_search(

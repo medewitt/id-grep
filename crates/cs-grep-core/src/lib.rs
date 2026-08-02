@@ -4,6 +4,7 @@ pub mod db;
 pub mod output;
 pub mod query;
 pub mod sources;
+pub mod zotero;
 
 mod error;
 mod model;
