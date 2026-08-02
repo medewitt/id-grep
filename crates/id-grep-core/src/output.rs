@@ -4,6 +4,10 @@ use std::str::FromStr;
 
 use crate::{Error, Paper, Result};
 
+/// Version of the `--format json` output contract. Bump on any
+/// backwards-incompatible change to the JSON shape or record fields.
+pub const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Table,
@@ -101,7 +105,11 @@ pub fn render(papers: &[Paper], format: Format, columns: Option<&[Column]>) -> R
     match format {
         Format::Table => Ok(table(papers, columns.unwrap_or(DEFAULT_TABLE_COLS))),
         Format::Csv => csv(papers, columns.unwrap_or(ALL_COLS)),
-        Format::Json => Ok(serde_json::to_string_pretty(papers)?),
+        Format::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "count": papers.len(),
+            "results": papers,
+        }))?),
         Format::Bibtex => Ok(bibtex(papers)),
     }
 }
@@ -279,12 +287,16 @@ mod tests {
     }
 
     #[test]
-    fn json_uses_abstract_key() {
+    fn json_envelope_has_schema_version_and_results() {
         let j = render(&sample(), Format::Json, None).unwrap();
         assert!(j.contains("\"abstract\""));
         assert!(!j.contains("abstract_text"));
-        // round-trips back into Paper
-        let back: Vec<Paper> = serde_json::from_str(&j).unwrap();
+
+        let value: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(value["schema_version"], SCHEMA_VERSION);
+        assert_eq!(value["count"], 1);
+        // the results array round-trips back into Paper
+        let back: Vec<Paper> = serde_json::from_value(value["results"].clone()).unwrap();
         assert_eq!(back, sample());
     }
 

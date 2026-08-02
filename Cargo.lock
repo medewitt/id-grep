@@ -1141,6 +1141,7 @@ dependencies = [
  "crossterm",
  "id-grep-core",
  "ratatui",
+ "serde_json",
  "tokio",
  "url",
 ]

@@ -4,6 +4,8 @@ use std::{
     collections::BTreeMap,
     io::Write,
     path::{Path, PathBuf},
+    process::ExitCode,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::{Context, Result};
@@ -54,6 +56,10 @@ struct Cli {
     /// Launch the interactive TUI.
     #[arg(long)]
     tui: bool,
+
+    /// Suppress progress/log output on stderr (results still print on stdout).
+    #[arg(long, global = true)]
+    quiet: bool,
 
     /// Drop results already in your Zotero library (uses --zotero or ~/Zotero).
     #[arg(long)]
@@ -139,9 +145,46 @@ pub(crate) enum SortMode {
     Rank,
 }
 
+/// Suppresses stderr progress/log output when set (via `--quiet`).
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+fn quiet() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
+
+/// Outcome of a command, mapped to a process exit code.
+enum ExitStatus {
+    /// Completed normally.
+    Ok,
+    /// A search returned no matching papers (exit code 3).
+    NoResults,
+}
+
+/// Distinct exit codes so a calling agent can branch on the outcome.
+mod exit {
+    pub const NO_RESULTS: u8 = 3;
+    pub const CONFIG: u8 = 4; // bad config / bad usage / not found
+    pub const SOURCE: u8 = 5; // network / upstream source failure
+    pub const GENERIC: u8 = 1;
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
+    QUIET.store(cli.quiet, Ordering::Relaxed);
+    let format = cli.format.unwrap_or(Format::Table);
+
+    match run(cli).await {
+        Ok(ExitStatus::Ok) => ExitCode::SUCCESS,
+        Ok(ExitStatus::NoResults) => ExitCode::from(exit::NO_RESULTS),
+        Err(e) => {
+            report_error(&e, format);
+            ExitCode::from(exit_code_for(&e))
+        }
+    }
+}
+
+async fn run(cli: Cli) -> Result<ExitStatus> {
     reject_search_args_for_subcommands(&cli)?;
     let paths = Paths::resolve()?;
     let bundle_override = match &cli.command {
@@ -152,14 +195,48 @@ async fn main() -> Result<()> {
     let config = load_config_with_bundles(&cli, &paths, bundle_override)?;
 
     match &cli.command {
-        Some(Command::Init) => cmd_init(&cli, &paths),
-        Some(Command::Update(args)) => cmd_update(args, &cli, &paths, &config).await,
-        Some(Command::Enrich(args)) => cmd_enrich(args, &cli, &paths, &config).await,
+        Some(Command::Init) => cmd_init(&cli, &paths).map(|()| ExitStatus::Ok),
+        Some(Command::Update(args)) => cmd_update(args, &cli, &paths, &config)
+            .await
+            .map(|()| ExitStatus::Ok),
+        Some(Command::Enrich(args)) => cmd_enrich(args, &cli, &paths, &config)
+            .await
+            .map(|()| ExitStatus::Ok),
         None if cli.tui => {
             let db = open_db(&cli, &paths)?;
-            tui::run(db, config)
+            tui::run(db, config).map(|()| ExitStatus::Ok)
         }
         None => cmd_search(&cli, &paths, &config),
+    }
+}
+
+/// Map an error to a distinct exit code by inspecting the core error kind
+/// anywhere in the chain.
+fn exit_code_for(err: &anyhow::Error) -> u8 {
+    use id_grep_core::Error;
+    for cause in err.chain() {
+        if let Some(e) = cause.downcast_ref::<Error>() {
+            return match e {
+                Error::Config(_) | Error::Query(_) => exit::CONFIG,
+                Error::Http(_) => exit::SOURCE,
+                _ => exit::GENERIC,
+            };
+        }
+    }
+    exit::GENERIC
+}
+
+/// Report an error: a JSON object on stderr under `--format json`, otherwise
+/// the human-readable error chain.
+fn report_error(err: &anyhow::Error, format: Format) {
+    if matches!(format, Format::Json) {
+        let payload = serde_json::json!({
+            "schema_version": output::SCHEMA_VERSION,
+            "error": format!("{err:#}"),
+        });
+        eprintln!("{payload}");
+    } else {
+        eprintln!("error: {err:#}");
     }
 }
 
@@ -173,14 +250,23 @@ fn reject_search_args_for_subcommands(cli: &Cli) -> Result<()> {
 }
 
 fn log_header(title: &str) {
+    if quiet() {
+        return;
+    }
     eprintln!("{title}");
 }
 
 fn log_field(label: &str, value: impl std::fmt::Display) {
+    if quiet() {
+        return;
+    }
     eprintln!("  {label:<10} {value}");
 }
 
 fn log_blank() {
+    if quiet() {
+        return;
+    }
     eprintln!();
 }
 
@@ -241,7 +327,7 @@ fn write_default_config(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
+fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<ExitStatus> {
     let db = open_db(cli, paths)?;
 
     let raw = cli.query.join(" ");
@@ -268,10 +354,14 @@ fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
             println!();
         }
     }
-    if matches!(format, Format::Table) {
+    if matches!(format, Format::Table) && !quiet() {
         eprintln!("results    {}", papers.len());
     }
-    Ok(())
+    Ok(if papers.is_empty() {
+        ExitStatus::NoResults
+    } else {
+        ExitStatus::Ok
+    })
 }
 
 fn open_zotero_library(cli: &Cli) -> Result<ZoteroLibrary> {
@@ -335,8 +425,10 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
     let mut failed = Vec::new();
     for id in &venue_ids {
         let venue = config.venue(id).expect("resolved venue");
-        eprint!("  {id:<12} ");
-        let _ = std::io::stderr().flush();
+        if !quiet() {
+            eprint!("  {id:<12} ");
+            let _ = std::io::stderr().flush();
+        }
         // Prefer OpenAlex when the venue carries an OpenAlex id or ISSN; else
         // PubMed when it declares an NLM journal abbreviation; else fall back to
         // DBLP for CS venues that only have a dblp_stream.
@@ -351,10 +443,14 @@ async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config
             Ok(papers) => {
                 let n = db.upsert_papers(&papers)?;
                 total += papers.len();
-                eprintln!("fetched {:>5} papers, {:>5} upserted", papers.len(), n);
+                if !quiet() {
+                    eprintln!("fetched {:>5} papers, {:>5} upserted", papers.len(), n);
+                }
             }
             Err(e) => {
-                eprintln!("failed   {e}");
+                if !quiet() {
+                    eprintln!("failed   {e}");
+                }
                 failed.push(id.clone());
             }
         }
