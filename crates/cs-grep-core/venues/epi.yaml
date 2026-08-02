@@ -1,0 +1,74 @@
+# Epidemiology and clinical infectious-disease journals.
+# ISSNs are from public sources; verify against OpenAlex `/sources` if a venue
+# returns no records on `update`.
+
+venues:
+  - id: JID
+    name: Journal of Infectious Diseases
+    issn: ["0022-1899", "1537-6613"]
+    pubmed_journal: J Infect Dis
+    aliases: [jid, j-infect-dis]
+    tags: [epi]
+
+  - id: Lancet-ID
+    name: The Lancet Infectious Diseases
+    issn: ["1473-3099", "1474-4457"]
+    pubmed_journal: Lancet Infect Dis
+    aliases: [lancet-id, lancet-infectious-diseases]
+    tags: [epi]
+
+  - id: Lancet
+    name: The Lancet
+    issn: ["0140-6736", "1474-547X"]
+    pubmed_journal: Lancet
+    aliases: [lancet]
+    tags: [epi]
+
+  - id: EID
+    name: Emerging Infectious Diseases
+    issn: ["1080-6040", "1080-6059"]
+    pubmed_journal: Emerg Infect Dis
+    aliases: [eid, emerging-infectious-diseases]
+    tags: [epi]
+
+  - id: Epidemiol-Infect
+    name: Epidemiology and Infection
+    issn: ["0950-2688", "1469-4409"]
+    pubmed_journal: Epidemiol Infect
+    aliases: [epidemiol-infect, epi-infect]
+    tags: [epi]
+
+  - id: CID
+    name: Clinical Infectious Diseases
+    issn: ["1058-4838", "1537-6591"]
+    pubmed_journal: Clin Infect Dis
+    aliases: [cid, clin-infect-dis]
+    tags: [epi]
+
+  - id: AJE
+    name: American Journal of Epidemiology
+    issn: ["0002-9262", "1476-6256"]
+    pubmed_journal: Am J Epidemiol
+    aliases: [aje, am-j-epidemiol]
+    tags: [epi]
+
+  - id: IJE
+    name: International Journal of Epidemiology
+    issn: ["0300-5771", "1464-3685"]
+    pubmed_journal: Int J Epidemiol
+    aliases: [ije, int-j-epidemiol]
+    tags: [epi]
+
+  - id: Epidemiology
+    name: Epidemiology
+    issn: ["1044-3983", "1531-5487"]
+    pubmed_journal: Epidemiology
+    aliases: [epidemiology]
+    tags: [epi]
+
+  - id: BMC-ID
+    name: BMC Infectious Diseases
+    issn: ["1471-2334"]
+    pubmed_journal: BMC Infect Dis
+    aliases: [bmc-id, bmc-infect-dis]
+    tags: [epi]

@@ -1,0 +1,74 @@
+# Transmission modelling and computational / theoretical biology journals.
+# ISSNs are from public sources; verify against OpenAlex `/sources` if a venue
+# returns no records on `update`.
+
+venues:
+  - id: Epidemics
+    name: Epidemics
+    issn: ["1755-4365", "1878-0067"]
+    pubmed_journal: Epidemics
+    aliases: [epidemics]
+    tags: [modelling]
+
+  - id: IDM
+    name: Infectious Disease Modelling
+    issn: ["2468-0427"]
+    pubmed_journal: Infect Dis Model
+    aliases: [idm, infect-dis-model]
+    tags: [modelling]
+
+  - id: PLoS-Comp-Biol
+    name: PLOS Computational Biology
+    issn: ["1553-734X", "1553-7358"]
+    pubmed_journal: PLoS Comput Biol
+    aliases: [plos-cb, plos-comp-biol, ploscompbiol]
+    tags: [modelling]
+
+  - id: PLoS-ONE
+    name: PLOS ONE
+    issn: ["1932-6203"]
+    pubmed_journal: PLoS One
+    aliases: [plos-one, plosone]
+    tags: [modelling]
+
+  - id: PLoS-NTD
+    name: PLOS Neglected Tropical Diseases
+    issn: ["1935-2727", "1935-2735"]
+    pubmed_journal: PLoS Negl Trop Dis
+    aliases: [plos-ntd, plosntd]
+    tags: [modelling]
+
+  - id: JTB
+    name: Journal of Theoretical Biology
+    issn: ["0022-5193", "1095-8541"]
+    pubmed_journal: J Theor Biol
+    aliases: [jtb, j-theor-biol]
+    tags: [modelling]
+
+  - id: TPB
+    name: Theoretical Population Biology
+    issn: ["0040-5809", "1096-0325"]
+    pubmed_journal: Theor Popul Biol
+    aliases: [tpb, theor-popul-biol]
+    tags: [modelling]
+
+  - id: BMB
+    name: Bulletin of Mathematical Biology
+    issn: ["0092-8240", "1522-9602"]
+    pubmed_journal: Bull Math Biol
+    aliases: [bmb, bull-math-biol]
+    tags: [modelling]
+
+  - id: Math-Biosci
+    name: Mathematical Biosciences
+    issn: ["0025-5564", "1879-3134"]
+    pubmed_journal: Math Biosci
+    aliases: [math-biosci]
+    tags: [modelling]
+
+  - id: JRSI
+    name: Journal of the Royal Society Interface
+    issn: ["1742-5689", "1742-5662"]
+    pubmed_journal: J R Soc Interface
+    aliases: [jrsi, j-r-soc-interface, interface]
+    tags: [modelling]

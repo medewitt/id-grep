@@ -30,8 +30,8 @@ fn fixture() -> serde_json::Value {
 
 #[test]
 fn full_pipeline() {
-    // ingest
-    let papers = dblp::parse_results(&fixture(), "NDSS");
+    // ingest (labelled with a default-catalog venue)
+    let papers = dblp::parse_results(&fixture(), "Epidemics");
     assert_eq!(papers.len(), 3);
     let mut db = Database::open_in_memory().unwrap();
     let n = db.upsert_papers(&papers).unwrap();
@@ -64,7 +64,7 @@ fn full_pipeline() {
     assert_eq!(hits[0].key, "p2");
 
     // full-text and metadata query
-    let parsed = query::parse("attacks WHERE year:2023- AND venue:NDSS", &config).unwrap();
+    let parsed = query::parse("attacks WHERE year:2023- AND venue:Epidemics", &config).unwrap();
     let recent = db
         .search(&Search {
             fts: parsed.fts,
@@ -77,6 +77,6 @@ fn full_pipeline() {
 
     // bibtex render
     let bib = render(&papers, Format::Bibtex, None).unwrap();
-    assert!(bib.contains("@inproceedings{ndss:2024:smith,"));
+    assert!(bib.contains("@inproceedings{epidemics:2024:smith,"));
     assert!(bib.contains("author    = {Alice Smith and Bob Jones}"));
 }

@@ -504,7 +504,7 @@ mod tests {
     fn build_search_maps_query_and_options() {
         let config = Config::defaults().unwrap();
         let search = build_search(
-            "malware WHERE tag:ml AND year:2020-",
+            "malaria WHERE tag:epi AND year:2020-",
             &config,
             SortMode::Year,
             Some(10),
@@ -525,9 +525,9 @@ mod tests {
             "cs-grep",
             "enrich",
             "--bundle",
-            "se,ml",
+            "epi,modelling",
             "--venue",
-            "acl,emnlp",
+            "jid,eid",
             "--since",
             "2025",
             "--jobs",
@@ -539,8 +539,11 @@ mod tests {
         let Some(Command::Enrich(args)) = cli.command else {
             panic!("expected enrich command");
         };
-        assert_eq!(args.bundle, vec!["se".to_string(), "ml".to_string()]);
-        assert_eq!(args.venue, vec!["acl".to_string(), "emnlp".to_string()]);
+        assert_eq!(
+            args.bundle,
+            vec!["epi".to_string(), "modelling".to_string()]
+        );
+        assert_eq!(args.venue, vec!["jid".to_string(), "eid".to_string()]);
         assert_eq!(args.since, Some(2025));
         assert_eq!(args.jobs, 4);
         assert_eq!(args.limit, Some(10));
@@ -562,9 +565,15 @@ mod tests {
 
     #[test]
     fn bundle_override_limits_venue_resolution() {
-        let cli =
-            Cli::try_parse_from(["cs-grep", "update", "--bundle", "se,ml", "--venue", "ndss"])
-                .unwrap();
+        let cli = Cli::try_parse_from([
+            "cs-grep",
+            "update",
+            "--bundle",
+            "epi,modelling",
+            "--venue",
+            "nope",
+        ])
+        .unwrap();
         let paths = Paths {
             data_dir: temp_test_path("data"),
             config_dir: temp_test_path("config"),
@@ -573,8 +582,8 @@ mod tests {
             panic!("expected update command");
         };
         let config = load_config_with_bundles(&cli, &paths, Some(&args.bundle)).unwrap();
-        assert!(config.venue("ICSE").is_some());
-        assert!(config.venue("ICML").is_some());
+        assert!(config.venue("JID").is_some());
+        assert!(config.venue("Epidemics").is_some());
         assert!(config.resolve_venues(&args.venue).is_err());
     }
 
@@ -584,7 +593,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         write_default_config(&path).unwrap();
         let default = std::fs::read_to_string(&path).unwrap();
-        assert!(default.contains("security"));
+        assert!(default.contains("epi"));
         assert!(default.contains("min_year: 2000"));
 
         std::fs::write(&path, "bundles: []\n").unwrap();

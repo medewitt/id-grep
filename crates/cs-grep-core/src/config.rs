@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
-const DEFAULT_BUNDLES: &[&str] = &["security", "ml", "se"];
+const DEFAULT_BUNDLES: &[&str] = &["epi", "modelling", "ecoevo"];
 const BUNDLED_VENUES: &[(&str, &str)] = &[
-    ("security", include_str!("../venues/security.yaml")),
-    ("ml", include_str!("../venues/ml.yaml")),
-    ("se", include_str!("../venues/se.yaml")),
+    ("epi", include_str!("../venues/epi.yaml")),
+    ("modelling", include_str!("../venues/modelling.yaml")),
+    ("ecoevo", include_str!("../venues/ecoevo.yaml")),
+    ("preprints", include_str!("../venues/preprints.yaml")),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -388,59 +389,34 @@ mod tests {
     #[test]
     fn bundled_tags_match_venue_families() {
         let cfg = Config::defaults().unwrap();
-        let expected: [(&str, &[&str]); 5] = [
-            (
-                "security",
-                &[
-                    "NDSS",
-                    "USENIX-SEC",
-                    "SP",
-                    "CCS",
-                    "RAID",
-                    "ACSAC",
-                    "ESORICS",
-                    "AsiaCCS",
-                    "EuroSP",
-                    "AISec",
-                    "SaTML",
-                ],
-            ),
-            (
-                "ml",
-                &[
-                    "AISec", "SaTML", "NeurIPS", "ICML", "ICLR", "ACL", "EMNLP", "CVPR", "ICCV",
-                    "IJCAI", "AAAI",
-                ],
-            ),
-            ("nlp", &["ACL", "EMNLP"]),
-            ("cv", &["CVPR", "ICCV"]),
-            ("se", &["ICSE", "FSE", "ASE"]),
-        ];
 
+        // Default catalog tags (the preprints bundle is opt-in, not loaded here).
         let actual_tags = cfg
             .venues
             .iter()
             .flat_map(|venue| venue.tags.iter().map(String::as_str))
             .collect::<std::collections::BTreeSet<_>>();
-        let expected_tags = expected
-            .iter()
-            .map(|(tag, _)| *tag)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual_tags, expected_tags);
+        assert_eq!(
+            actual_tags,
+            ["ecology", "epi", "evolution", "modelling"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
 
-        for (tag, expected_venues) in expected {
-            assert_eq!(
-                cfg.venues_by_tag(&[tag.into()])
-                    .into_iter()
-                    .collect::<std::collections::BTreeSet<_>>(),
-                expected_venues
-                    .iter()
-                    .map(|id| (*id).to_string())
-                    .collect::<std::collections::BTreeSet<_>>(),
-                "wrong venues for tag {tag}"
-            );
-        }
+        // Spot-check a representative venue per tag.
+        let by_tag = |tag: &str| {
+            cfg.venues_by_tag(&[tag.into()])
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert!(by_tag("epi").contains("JID"));
+        assert!(by_tag("epi").contains("EID"));
+        assert!(by_tag("modelling").contains("Epidemics"));
+        assert!(by_tag("modelling").contains("PLoS-Comp-Biol"));
+        assert!(by_tag("ecology").contains("Ecology"));
+        assert!(by_tag("evolution").contains("MBE"));
 
+        // Every venue has at least one tag and no duplicates.
         for venue in &cfg.venues {
             assert!(!venue.tags.is_empty(), "{} has no tag", venue.id);
             assert_eq!(
@@ -457,12 +433,29 @@ mod tests {
     }
 
     #[test]
+    fn bundled_venues_have_openalex_identifier() {
+        // Every bundled venue must be fetchable via OpenAlex (ISSN or source id),
+        // so a catalog edit can't ship an unfetchable venue.
+        for (bundle, yaml) in BUNDLED_VENUES {
+            let bundle_file: BundleFile = serde_yaml::from_str(yaml).unwrap();
+            for venue in bundle_file.venues {
+                assert!(
+                    !venue.issn.is_empty() || venue.openalex_source_id.is_some(),
+                    "venue {} in {bundle} has no OpenAlex identifier",
+                    venue.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn lookup_by_alias_is_case_insensitive() {
         let cfg = Config::defaults().unwrap();
-        assert_eq!(cfg.venue("oakland").unwrap().id, "SP");
-        assert_eq!(cfg.venue("USENIX").unwrap().id, "USENIX-SEC");
-        assert_eq!(cfg.venue("Ndss").unwrap().id, "NDSS");
-        assert_eq!(cfg.venue("ijcai").unwrap().id, "IJCAI");
+        assert_eq!(cfg.venue("lancet-id").unwrap().id, "Lancet-ID");
+        assert_eq!(cfg.venue("EID").unwrap().id, "EID");
+        assert_eq!(cfg.venue("Epidemics").unwrap().id, "Epidemics");
+        assert_eq!(cfg.venue("plos-cb").unwrap().id, "PLoS-Comp-Biol");
+        assert_eq!(cfg.venue("tree").unwrap().id, "TREE");
         assert!(cfg.venue("nope").is_none());
     }
 
@@ -507,18 +500,18 @@ venues:
         let yaml = Config::default_user_config_yaml().unwrap();
         assert!(!yaml.contains("venues: []"));
         let cfg = Config::from_yaml(&yaml).unwrap();
-        assert_eq!(cfg.bundles, vec!["security", "ml", "se"]);
+        assert_eq!(cfg.bundles, vec!["epi", "modelling", "ecoevo"]);
         assert_eq!(cfg.defaults.min_year, 2000);
-        assert!(cfg.venue("NDSS").is_some());
-        assert!(cfg.venue("ICSE").is_some());
+        assert!(cfg.venue("Epidemics").is_some());
+        assert!(cfg.venue("Ecology").is_some());
     }
 
     #[test]
     fn bundle_selection_limits_bundled_venues() {
-        let cfg = Config::from_yaml("bundles: [se]\n").unwrap();
-        assert_eq!(cfg.bundles, vec!["se"]);
-        assert!(cfg.venue("ICSE").is_some());
-        assert!(cfg.venue("NDSS").is_none());
+        let cfg = Config::from_yaml("bundles: [epi]\n").unwrap();
+        assert_eq!(cfg.bundles, vec!["epi"]);
+        assert!(cfg.venue("JID").is_some());
+        assert!(cfg.venue("Ecology").is_none());
     }
 
     #[test]
@@ -528,12 +521,12 @@ venues:
 bundles: []
 venues:
   - id: LOCAL
-    dblp_stream: conf/local
+    issn: ["1234-5678"]
 "#,
         )
         .unwrap();
         assert!(cfg.venue("LOCAL").is_some());
-        assert!(cfg.venue("NDSS").is_none());
+        assert!(cfg.venue("Epidemics").is_none());
     }
 
     #[test]
@@ -548,17 +541,17 @@ venues:
         std::fs::write(
             &path,
             r#"
-bundles: [security]
+bundles: [epi]
 venues:
   - id: LOCAL
-    dblp_stream: conf/local
+    issn: ["1234-5678"]
 "#,
         )
         .unwrap();
-        let bundles = vec!["se".to_string()];
+        let bundles = vec!["ecoevo".to_string()];
         let cfg = Config::load_with_bundles(Some(&path), Some(&bundles)).unwrap();
-        assert!(cfg.venue("ICSE").is_some());
-        assert!(cfg.venue("NDSS").is_none());
+        assert!(cfg.venue("Ecology").is_some());
+        assert!(cfg.venue("JID").is_none());
         assert!(cfg.venue("LOCAL").is_some());
     }
 
@@ -569,18 +562,18 @@ venues:
         std::fs::write(
             &path,
             r#"
-bundles: [security]
+bundles: [epi]
 venues:
-  - id: NDSS
-    dblp_stream: conf/custom-ndss
+  - id: Epidemics
+    issn: ["9999-9999"]
     rank: custom
 "#,
         )
         .unwrap();
-        let bundles = vec!["se".to_string()];
+        let bundles = vec!["ecoevo".to_string()];
         let cfg = Config::load_with_bundles(Some(&path), Some(&bundles)).unwrap();
-        let venue = cfg.venue("NDSS").unwrap();
-        assert_eq!(venue.dblp_stream.as_deref(), Some("conf/custom-ndss"));
+        let venue = cfg.venue("Epidemics").unwrap();
+        assert_eq!(venue.issn, vec!["9999-9999".to_string()]);
         assert_eq!(venue.rank.as_deref(), Some("custom"));
     }
 
@@ -611,9 +604,9 @@ venues:
     fn resolve_venues_reports_unknown() {
         let cfg = Config::defaults().unwrap();
         let ok = cfg
-            .resolve_venues(&["ndss".into(), "oakland".into()])
+            .resolve_venues(&["epidemics".into(), "eid".into()])
             .unwrap();
-        assert_eq!(ok, vec!["NDSS".to_string(), "SP".to_string()]);
+        assert_eq!(ok, vec!["Epidemics".to_string(), "EID".to_string()]);
         assert!(cfg.resolve_venues(&["bogus".into()]).is_err());
     }
 }

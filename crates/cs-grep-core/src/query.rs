@@ -572,15 +572,15 @@ mod tests {
 
     #[test]
     fn match_all_and_where_boundary() {
-        let parsed = parse("* WHERE tag:security", &config()).unwrap();
+        let parsed = parse("* WHERE tag:epi", &config()).unwrap();
         assert!(parsed.fts.is_none());
         assert!(matches!(parsed.filter, Some(FilterExpr::Venue(_))));
 
         assert!(parse("* AND kernel", &config()).is_err());
-        assert!(parse("WHERE tag:ml", &config()).is_err());
+        assert!(parse("WHERE tag:epi", &config()).is_err());
         assert!(parse("* WHERE", &config()).is_err());
-        assert!(parse("* WHERE tag:ml WHERE year:2020", &config()).is_err());
-        assert!(parse("kernel tag:ml", &config()).is_err());
+        assert!(parse("* WHERE tag:epi WHERE year:2020", &config()).is_err());
+        assert!(parse("kernel tag:epi", &config()).is_err());
         assert!(parse("kernel WHERE title:fuzzing", &config()).is_err());
         assert!(parse("kernel WHERE malware", &config()).is_err());
     }
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn metadata_boolean_tree_is_preserved() {
         let parsed = parse(
-            "* WHERE (tag:ml AND tag:security) OR NOT year:2020-",
+            "* WHERE (tag:modelling AND tag:epi) OR NOT year:2020-",
             &config(),
         )
         .unwrap();
@@ -601,28 +601,21 @@ mod tests {
 
     #[test]
     fn filter_values_are_resolved_and_validated() {
-        let parsed = parse(
-            "* WHERE venue:oakland AND rank:a* AND tag:security AND doi:10.1145",
-            &config(),
-        )
-        .unwrap();
+        let parsed = parse("* WHERE venue:eid AND tag:epi AND doi:10.1371", &config()).unwrap();
         let Some(FilterExpr::And(parts)) = parsed.filter else {
             panic!("expected AND filter");
         };
-        assert_eq!(parts.len(), 4);
-        assert_eq!(parts[0], FilterExpr::Venue(vec!["SP".into()]));
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], FilterExpr::Venue(vec!["EID".into()]));
         assert!(matches!(
             &parts[1],
-            FilterExpr::Venue(venues) if venues.iter().any(|venue| venue == "NDSS")
+            FilterExpr::Venue(venues) if venues.iter().any(|venue| venue == "JID")
         ));
-        assert!(matches!(
-            &parts[2],
-            FilterExpr::Venue(venues) if venues.iter().any(|venue| venue == "CCS")
-        ));
+        assert_eq!(parts[2], FilterExpr::Doi("10.1371".into()));
         assert!(parse("* WHERE venue:nope", &config()).is_err());
         assert!(parse("* WHERE rank:nope", &config()).is_err());
         assert!(parse("* WHERE tag:nope", &config()).is_err());
-        assert!(parse("* WHERE tag:ml,security", &config()).is_err());
+        assert!(parse("* WHERE tag:epi,modelling", &config()).is_err());
     }
 
     #[test]
