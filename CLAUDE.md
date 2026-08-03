@@ -30,7 +30,7 @@ id-grep --format json --quiet 'transmission WHERE venue:Epidemics'
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "count": 2,
   "results": [
     {
@@ -42,7 +42,8 @@ id-grep --format json --quiet 'transmission WHERE venue:Epidemics'
       "authors": "Ada Lovelace, Alan Turing",   // ", "-joined, byline order
       "doi": "10.1016/…",       // may be null
       "url": "https://…",       // may be null
-      "abstract": "…"           // may be null
+      "abstract": "…",          // may be null
+      "owned": true              // true|false if a Zotero library was consulted (--mark-owned / --exclude-owned), else null
     }
   ]
 }
@@ -51,7 +52,7 @@ id-grep --format json --quiet 'transmission WHERE venue:Epidemics'
 Check `schema_version` before parsing; it bumps on any incompatible change.
 Object key order is **not** significant — parse by key, not by position (the
 serializer currently emits keys alphabetically). On error under `--format json`,
-stdout is empty and stderr carries `{"schema_version":1,"error":"…"}`.
+stdout is empty and stderr carries `{"schema_version":2,"error":"…"}`.
 
 ## Exit codes (branch on these)
 
@@ -94,16 +95,29 @@ American Naturalist) carry `scope: infectious-disease` in the catalog, so
 infectious-disease subfield (Infectious Diseases, Virology, Parasitology,
 Epidemiology) rather than everything the journal publishes.
 
-## Zotero dedup
+## Zotero cross-reference
 
-Cross-reference against a local Zotero library and drop what you already own:
+Cross-reference against a local Zotero library. Two modes, both opt-in (a
+library is never consulted unless one of these flags is passed):
+
+- `--mark-owned` — keep every result, and annotate each with whether it's
+  already in the library. Adds an `owned` (`true`/`false`) field to JSON
+  records, and an `owned` column (`*`/blank) as the first table/CSV column.
+  This is the default choice when you still want to see (and cite) papers
+  you already have — the point is visibility, not filtering.
+- `--exclude-owned` — drop owned results entirely, built on the same
+  owned-check as `--mark-owned` (so combining both is redundant: the
+  survivors are all unowned, and `owned` reads `false` throughout).
 
 ```bash
+id-grep --format json --mark-owned --zotero ~/Zotero 'malaria WHERE venue:PLoS-NTD'
 id-grep --format json --exclude-owned --zotero ~/Zotero 'malaria WHERE venue:PLoS-NTD'
 ```
 
 `--zotero` defaults to `~/Zotero` if omitted. Matching is DOI-first, then
 normalized title. Zotero can be running (the DB is copied and opened read-only).
+Without `--mark-owned`/`--exclude-owned`, `owned` is `null` in JSON and no
+`owned` column appears in table/CSV output — plain queries never touch Zotero.
 
 ## Credentials (optional, via .env or environment)
 

@@ -6,7 +6,9 @@ use crate::{Error, Paper, Result};
 
 /// Version of the `--format json` output contract. Bump on any
 /// backwards-incompatible change to the JSON shape or record fields.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// v2: added `owned` (bool | null) to every result record.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -39,6 +41,10 @@ pub enum Column {
     Doi,
     Url,
     Abstract,
+    /// Whether the paper is already in the consulted Zotero library. Only
+    /// meaningful (and only auto-added to default column sets) when a
+    /// library was actually consulted this run.
+    Owned,
 }
 
 impl Column {
@@ -52,10 +58,13 @@ impl Column {
             Column::Doi => "doi",
             Column::Url => "url",
             Column::Abstract => "abstract",
+            Column::Owned => "owned",
         }
     }
 
-    fn value(self, p: &Paper) -> String {
+    /// Render this column's value for `p`. `owned` is this paper's owned
+    /// flag, if a Zotero library was consulted this run.
+    fn value(self, p: &Paper, owned: Option<bool>) -> String {
         match self {
             Column::Key => p.key.clone(),
             Column::Venue => p.venue.clone(),
@@ -65,6 +74,13 @@ impl Column {
             Column::Doi => p.doi.clone().unwrap_or_default(),
             Column::Url => p.url.clone().unwrap_or_default(),
             Column::Abstract => p.abstract_text.clone().unwrap_or_default(),
+            Column::Owned => {
+                if owned == Some(true) {
+                    "*".to_string()
+                } else {
+                    String::new()
+                }
+            }
         }
     }
 }
@@ -81,6 +97,7 @@ impl FromStr for Column {
             "doi" => Ok(Column::Doi),
             "url" => Ok(Column::Url),
             "abstract" => Ok(Column::Abstract),
+            "owned" => Ok(Column::Owned),
             other => Err(Error::Other(format!("unknown column: {other}"))),
         }
     }
@@ -99,17 +116,69 @@ const ALL_COLS: &[Column] = &[
     Column::Abstract,
 ];
 
+/// A paper paired with whether it's already in the consulted Zotero
+/// library, for JSON serialization. `owned` is `null` when no library was
+/// consulted this run.
+#[derive(serde::Serialize)]
+struct PaperOut<'a> {
+    #[serde(flatten)]
+    paper: &'a Paper,
+    owned: Option<bool>,
+}
+
+/// Default table columns, extended with `owned` up front when a Zotero
+/// library was consulted (`owned` is `Some`), so it's the first thing you
+/// see when scanning results.
+fn effective_columns(
+    columns: Option<&[Column]>,
+    defaults: &[Column],
+    owned: Option<&[bool]>,
+) -> Vec<Column> {
+    match columns {
+        Some(cols) => cols.to_vec(),
+        None => {
+            let mut cols = defaults.to_vec();
+            if owned.is_some() {
+                cols.insert(0, Column::Owned);
+            }
+            cols
+        }
+    }
+}
+
 /// Render papers in the requested format. `columns` overrides the default
-/// column set for table/csv output (ignored for json/bibtex).
-pub fn render(papers: &[Paper], format: Format, columns: Option<&[Column]>) -> Result<String> {
+/// column set for table/csv output (ignored for json/bibtex). `owned`, when
+/// present, marks per-paper whether the paper is already in the consulted
+/// Zotero library (same order/length as `papers`); pass `None` when no
+/// library was consulted this run.
+pub fn render(
+    papers: &[Paper],
+    format: Format,
+    columns: Option<&[Column]>,
+    owned: Option<&[bool]>,
+) -> Result<String> {
     match format {
-        Format::Table => Ok(table(papers, columns.unwrap_or(DEFAULT_TABLE_COLS))),
-        Format::Csv => csv(papers, columns.unwrap_or(ALL_COLS)),
-        Format::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": SCHEMA_VERSION,
-            "count": papers.len(),
-            "results": papers,
-        }))?),
+        Format::Table => Ok(table(
+            papers,
+            &effective_columns(columns, DEFAULT_TABLE_COLS, owned),
+            owned,
+        )),
+        Format::Csv => csv(papers, &effective_columns(columns, ALL_COLS, owned), owned),
+        Format::Json => {
+            let results: Vec<PaperOut<'_>> = papers
+                .iter()
+                .enumerate()
+                .map(|(i, paper)| PaperOut {
+                    paper,
+                    owned: owned.map(|o| o[i]),
+                })
+                .collect();
+            Ok(serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": SCHEMA_VERSION,
+                "count": papers.len(),
+                "results": results,
+            }))?)
+        }
         Format::Bibtex => Ok(bibtex(papers)),
     }
 }
@@ -123,7 +192,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn table(papers: &[Paper], cols: &[Column]) -> String {
+fn table(papers: &[Paper], cols: &[Column], owned: Option<&[bool]>) -> String {
     // Per-column display cap so the title column doesn't blow up the width.
     let cap = |col: Column| match col {
         Column::Title => 70,
@@ -134,10 +203,10 @@ fn table(papers: &[Paper], cols: &[Column]) -> String {
     };
 
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(papers.len());
-    for p in papers {
+    for (i, p) in papers.iter().enumerate() {
         rows.push(
             cols.iter()
-                .map(|c| truncate(&c.value(p), cap(*c)))
+                .map(|c| truncate(&c.value(p, owned.map(|o| o[i])), cap(*c)))
                 .collect(),
         );
     }
@@ -176,11 +245,11 @@ fn table(papers: &[Paper], cols: &[Column]) -> String {
     out
 }
 
-fn csv(papers: &[Paper], cols: &[Column]) -> Result<String> {
+fn csv(papers: &[Paper], cols: &[Column], owned: Option<&[bool]>) -> Result<String> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
     wtr.write_record(cols.iter().map(|c| c.header()))?;
-    for p in papers {
-        wtr.write_record(cols.iter().map(|c| c.value(p)))?;
+    for (i, p) in papers.iter().enumerate() {
+        wtr.write_record(cols.iter().map(|c| c.value(p, owned.map(|o| o[i]))))?;
     }
     let bytes = wtr.into_inner().map_err(|e| e.into_error())?;
     Ok(String::from_utf8(bytes)?)
@@ -277,7 +346,7 @@ mod tests {
 
     #[test]
     fn table_has_header_and_row() {
-        let t = render(&sample(), Format::Table, None).unwrap();
+        let t = render(&sample(), Format::Table, None, None).unwrap();
         let lines: Vec<&str> = t.lines().collect();
         assert!(lines[0].contains("venue"));
         assert!(lines[0].contains("title"));
@@ -287,17 +356,36 @@ mod tests {
     }
 
     #[test]
+    fn table_adds_owned_column_up_front_only_when_consulted() {
+        let without = render(&sample(), Format::Table, None, None).unwrap();
+        assert!(!without.lines().next().unwrap().starts_with("owned"));
+
+        let with = render(&sample(), Format::Table, None, Some(&[true])).unwrap();
+        let lines: Vec<&str> = with.lines().collect();
+        assert!(lines[0].starts_with("owned"));
+        assert!(lines[2].starts_with('*'));
+    }
+
+    #[test]
     fn json_envelope_has_schema_version_and_results() {
-        let j = render(&sample(), Format::Json, None).unwrap();
+        let j = render(&sample(), Format::Json, None, None).unwrap();
         assert!(j.contains("\"abstract\""));
         assert!(!j.contains("abstract_text"));
 
         let value: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert_eq!(value["schema_version"], SCHEMA_VERSION);
         assert_eq!(value["count"], 1);
-        // the results array round-trips back into Paper
+        assert!(value["results"][0]["owned"].is_null());
+        // the results array round-trips back into Paper (ignoring the extra `owned` key)
         let back: Vec<Paper> = serde_json::from_value(value["results"].clone()).unwrap();
         assert_eq!(back, sample());
+    }
+
+    #[test]
+    fn json_owned_flag_is_surfaced_per_paper() {
+        let j = render(&sample(), Format::Json, None, Some(&[true])).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(value["results"][0]["owned"], true);
     }
 
     /// Byte-for-byte snapshot of the `--format json` envelope on a single
@@ -319,7 +407,7 @@ mod tests {
             url: Some("https://doi.org/10.1016/j.epidem.2021.100123".into()),
             abstract_text: Some("We estimate R0.".into()),
         };
-        let j = render(&[paper], Format::Json, None).unwrap();
+        let j = render(&[paper], Format::Json, None, None).unwrap();
         // NB: `serde_json::json!` (without the `preserve_order` feature) sorts
         // object keys alphabetically, so this does not match the field
         // declaration order in `Paper` / the CLAUDE.md example -- that's
@@ -332,6 +420,7 @@ mod tests {
       "authors": "Ada Lovelace, Alan Turing",
       "doi": "10.1016/j.epidem.2021.100123",
       "key": "W2001",
+      "owned": null,
       "source": "openalex",
       "title": "Estimating the basic reproduction number",
       "url": "https://doi.org/10.1016/j.epidem.2021.100123",
@@ -339,14 +428,14 @@ mod tests {
       "year": 2021
     }
   ],
-  "schema_version": 1
+  "schema_version": 2
 }"#;
         assert_eq!(j, expected);
     }
 
     #[test]
     fn csv_header_and_values() {
-        let c = render(&sample(), Format::Csv, None).unwrap();
+        let c = render(&sample(), Format::Csv, None, None).unwrap();
         let mut lines = c.lines();
         assert_eq!(
             lines.next().unwrap(),
@@ -359,8 +448,19 @@ mod tests {
     }
 
     #[test]
+    fn csv_adds_owned_column_up_front_only_when_consulted() {
+        let c = render(&sample(), Format::Csv, None, Some(&[false])).unwrap();
+        let mut lines = c.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            "owned,key,venue,year,title,authors,doi,url,abstract"
+        );
+        assert!(lines.next().unwrap().starts_with(','));
+    }
+
+    #[test]
     fn bibtex_structure() {
-        let b = render(&sample(), Format::Bibtex, None).unwrap();
+        let b = render(&sample(), Format::Bibtex, None, None).unwrap();
         assert!(b.contains("@inproceedings{ndss:2020:smith,"));
         assert!(b.contains("author    = {Alice Smith and Bob Jones}"));
         assert!(b.contains("booktitle = {NDSS}"));
@@ -380,7 +480,7 @@ mod tests {
             url: Some(r"https://example.com/a\b".into()),
             abstract_text: None,
         };
-        let b = render(&[paper], Format::Bibtex, None).unwrap();
+        let b = render(&[paper], Format::Bibtex, None, None).unwrap();
         assert!(b.contains("@inproceedings{sp:2024:a,"));
         assert!(b.contains(r"title     = {A \{broken\} 100\%\_safe \#1},"));
         assert!(b.contains(r"booktitle = {S\&P},"));
@@ -391,7 +491,7 @@ mod tests {
     #[test]
     fn custom_columns() {
         let cols = [Column::Year, Column::Title];
-        let c = csv(&sample(), &cols).unwrap();
+        let c = csv(&sample(), &cols, None).unwrap();
         assert_eq!(c.lines().next().unwrap(), "year,title");
     }
 }

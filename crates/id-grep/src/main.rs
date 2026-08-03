@@ -65,6 +65,11 @@ struct Cli {
     #[arg(long)]
     exclude_owned: bool,
 
+    /// Annotate results with whether they're already in your Zotero library,
+    /// without dropping any (uses --zotero or ~/Zotero).
+    #[arg(long)]
+    mark_owned: bool,
+
     /// Override database path.
     #[arg(long, global = true)]
     db: Option<PathBuf>,
@@ -87,6 +92,7 @@ impl Cli {
             || !self.fields.is_empty()
             || self.tui
             || self.exclude_owned
+            || self.mark_owned
     }
 }
 
@@ -338,16 +344,40 @@ fn cmd_search(cli: &Cli, paths: &Paths, config: &Config) -> Result<ExitStatus> {
         cli.limit,
         None,
     )?;
-    let mut papers = db.search(&search)?;
+    let papers = db.search(&search)?;
 
-    if cli.exclude_owned {
+    // Consult the Zotero library once and reuse the same per-paper owned
+    // flags for both dropping (--exclude-owned) and annotating (--mark-owned
+    // and the default owned column/field) -- one source of truth for
+    // "already in Zotero" either way.
+    let owned = if cli.exclude_owned || cli.mark_owned {
         let library = open_zotero_library(cli)?;
-        papers.retain(|paper| !library.is_owned(paper));
-    }
+        Some(
+            papers
+                .iter()
+                .map(|paper| library.is_owned(paper))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+
+    let (papers, owned) = if cli.exclude_owned {
+        let owned = owned.expect("computed above when exclude_owned is set");
+        let (papers, owned): (Vec<_>, Vec<_>) = papers
+            .into_iter()
+            .zip(owned)
+            .filter(|(_, is_owned)| !is_owned)
+            .unzip();
+        (papers, Some(owned))
+    } else {
+        (papers, owned)
+    };
 
     let columns = (!cli.fields.is_empty()).then_some(cli.fields.as_slice());
     let format = cli.format.unwrap_or(Format::Table);
-    let out = output::render(&papers, format, columns).map_err(|e| anyhow::anyhow!(e))?;
+    let out = output::render(&papers, format, columns, owned.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
     if !out.is_empty() {
         print!("{out}");
         if !out.ends_with('\n') {
