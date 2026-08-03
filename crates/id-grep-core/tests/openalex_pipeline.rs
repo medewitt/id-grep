@@ -63,7 +63,7 @@ fn full_pipeline_from_canned_openalex_page() {
         .unwrap();
     assert_eq!(hits.len(), 1);
 
-    let rendered = render(&hits, Format::Json, None).unwrap();
+    let rendered = render(&hits, Format::Json, None, None).unwrap();
     let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
     assert_eq!(value["schema_version"], SCHEMA_VERSION);
     assert_eq!(value["count"], 1);

@@ -76,7 +76,7 @@ fn full_pipeline() {
     assert_eq!(recent[0].key, "p2");
 
     // bibtex render
-    let bib = render(&papers, Format::Bibtex, None).unwrap();
+    let bib = render(&papers, Format::Bibtex, None, None).unwrap();
     assert!(bib.contains("@inproceedings{epidemics:2024:smith,"));
     assert!(bib.contains("author    = {Alice Smith and Bob Jones}"));
 }

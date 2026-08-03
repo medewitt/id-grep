@@ -175,7 +175,7 @@ id-grep --db ./papers.db 'symbolic epidemiology WHERE venue:AJE'
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "count": 2,
   "results": [
     {
@@ -187,7 +187,8 @@ id-grep --db ./papers.db 'symbolic epidemiology WHERE venue:AJE'
       "authors": "Ada Lovelace, Alan Turing",
       "doi": "10.1016/…",
       "url": "https://…",
-      "abstract": "…"
+      "abstract": "…",
+      "owned": null
     }
   ]
 }
@@ -195,7 +196,7 @@ id-grep --db ./papers.db 'symbolic epidemiology WHERE venue:AJE'
 
 Check `schema_version` before parsing; it only bumps on an incompatible
 change. On error under `--format json`, stdout is empty and stderr carries
-`{"schema_version":1,"error":"…"}` instead.
+`{"schema_version":2,"error":"…"}` instead.
 
 Pass `--quiet` to suppress human-readable progress/logging on stderr; results
 still print on stdout. This, combined with `--format json`, is the pairing to
@@ -207,12 +208,19 @@ results, `4` config/query error, `5` network/upstream failure).
 
 ## Zotero
 
-Cross-reference search results against a local Zotero library and drop
-anything you already own:
+Cross-reference search results against a local Zotero library — either mark
+what you already own, or drop it:
 
 ```sh
-id-grep --exclude-owned --zotero ~/Zotero 'malaria WHERE venue:plos-ntd'
+id-grep --mark-owned --zotero ~/Zotero 'malaria WHERE venue:plos-ntd'    # keep everything, flag owned rows
+id-grep --exclude-owned --zotero ~/Zotero 'malaria WHERE venue:plos-ntd' # drop owned rows entirely
 ```
+
+`--mark-owned` keeps every result and adds an `owned` field to JSON records
+(and an `owned` column, first in table/CSV output) so you can see at a
+glance — and still cite — papers you already have. `--exclude-owned` drops
+them instead, built on the same check. Neither flag is on by default, so a
+plain query never touches Zotero.
 
 `--zotero` defaults to `~/Zotero` if omitted. Matching is DOI-first, then
 normalized title. It's safe to run this while Zotero itself is open — the
