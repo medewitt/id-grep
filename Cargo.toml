@@ -8,7 +8,7 @@ edition = "2021"
 rust-version = "1.95"
 description = "Fast local search across infectious-disease ecology, evolution, and epidemiology literature"
 license = "MIT"
-repository = "https://github.com/medewitt/cs-grep"
+repository = "https://github.com/medewitt/id-grep"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
