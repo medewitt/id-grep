@@ -17,6 +17,11 @@ id-grep --format json --quiet 'transmission WHERE venue:Epidemics'
 
 `update`/`enrich` need network access; querying does not.
 
+`enrich` paces its Semantic Scholar requests and backs off (skipping S2 in
+favor of its existing OpenAlex/Crossref fallback) under sustained rate
+limiting rather than failing the run — see `Credentials` below for how
+`SEMANTIC_SCHOLAR_S2_KEY` affects that pacing.
+
 ## Always use these flags when scripting
 
 - `--format json` — machine-readable output (see schema below). Also switches
@@ -74,13 +79,18 @@ stdout is empty and stderr carries `{"schema_version":2,"error":"…"}`.
   everything (use with a `WHERE` clause).
 - Metadata filters (after `WHERE`): `venue:<id|alias>`, `tag:<tag>`,
   `year:2020`, `year:2018-2024`, `year:2020-`, `year:-2019`, `doi:<substr>`,
-  combined with `AND`/`OR`/`NOT`/parens.
+  `added-since:<YYYY-MM-DD>`, combined with `AND`/`OR`/`NOT`/parens.
+
+`added-since:<YYYY-MM-DD>` matches papers whose row was inserted or last
+changed (`updated_at`) on or after that date — use it to see what's new in
+the local index since you last checked, without re-reading a full result set.
 
 Examples:
 ```bash
 id-grep --format json 'spillover OR reservoir WHERE tag:ecology AND year:2015-'
 id-grep --format json '"basic reproduction number" WHERE venue:Epidemics'
 id-grep --format json '* WHERE venue:plos-ntd AND year:2023'
+id-grep --format json '* WHERE tag:epi AND added-since:2026-07-01'
 ```
 
 Unknown venue/tag/rank → exit 4. List what exists by reading the catalog bundles
@@ -94,6 +104,44 @@ American Naturalist) carry `scope: infectious-disease` in the catalog, so
 `update` fetches only works whose primary OpenAlex topic sits in an
 infectious-disease subfield (Infectious Diseases, Virology, Parasitology,
 Epidemiology) rather than everything the journal publishes.
+
+## Saved searches
+
+Persist a named query and, on each run, see only what's new since the last
+run — a scriptable alternative to manually tracking `added-since:` dates.
+
+```bash
+id-grep search save weekly-epi 'transmission WHERE venue:Epidemics'
+id-grep --format json --quiet search run weekly-epi   # first run: full results
+id-grep --format json --quiet search run weekly-epi   # later runs: only rows added/changed since the last run
+id-grep --format json --quiet search run weekly-epi --peek  # preview without advancing the last-run marker
+id-grep --format json --quiet search list
+id-grep search rm weekly-epi
+```
+
+- `save <name> <query>` validates the query and stores it; resaving an
+  existing name replaces the query and resets its last-run marker.
+- `run <name>` executes the saved query. The first run (no prior last-run
+  marker) returns the full result set; every run after that is implicitly
+  ANDed with `added-since:<last run>`, so only new/changed rows print. Exit
+  code follows the normal search contract (3 = ran fine, nothing new). A
+  real (non-`--peek`) run always advances the last-run marker, including
+  under `--format json` — that flag is for machine-readable output, not a
+  dry-run signal; use `--peek` when you want a no-op preview. `run` accepts
+  the usual `--format`/`--sort`/`--limit`/`--fields`.
+- `list` prints saved searches (name, query, last run); `--format json`
+  emits `{"schema_version": 2, "count": N, "saved_searches": [{"name",
+  "query", "last_run_at"}, ...]}` — note this is a different envelope shape
+  than search results (`results`/`count` of papers), since it's listing
+  saved queries, not papers.
+- `rm <name>` removes a saved search.
+- `run`/`rm` on an unknown name exit 4 (config error), consistent with the
+  exit-code table above.
+- Caveat: an ad-hoc query whose *first shell argument* is exactly `search`
+  (e.g. `id-grep search algorithms`, unquoted) is now parsed as this
+  subcommand group instead of a text search. Pass the query as a single
+  shell argument (`id-grep 'search algorithms'`) or reorder terms so
+  `search` isn't first (`id-grep 'algorithms search'`) to avoid this.
 
 ## Zotero cross-reference
 
@@ -124,6 +172,9 @@ Without `--mark-owned`/`--exclude-owned`, `owned` is `null` in JSON and no
 - `OPENALEX_MAILTO` — email for OpenAlex's polite pool (recommended).
 - `NCBI_API_KEY`, `NCBI_EMAIL` — raise PubMed rate limits.
 - `OPENALEX_API_KEY`, `SEMANTIC_SCHOLAR_S2_KEY` — optional API keys.
+  `SEMANTIC_SCHOLAR_S2_KEY` also raises the pacing rate `enrich` uses for
+  Semantic Scholar requests; without it, requests are paced more
+  conservatively to avoid tripping S2's unauthenticated rate limits.
 
 See `.env.example`. None are required to query an already-built index.
 

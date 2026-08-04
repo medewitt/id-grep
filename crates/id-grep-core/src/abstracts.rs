@@ -33,6 +33,22 @@ const OPENALEX_BATCH_SIZE: usize = 100;
 const TRANSIENT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MIN_ABSTRACT_CHARS: usize = 80;
 const MAX_ABSTRACT_CHARS: usize = 6_000;
+/// Bounded retries for a 429 on a single request (in addition to the first
+/// attempt), each waiting for `rate_limit_delay`. Kept small so a run can't
+/// hang on one stuck request.
+const MAX_RATE_LIMIT_RETRIES: u32 = 2;
+/// Conservative minimum spacing between Semantic Scholar requests, enforced
+/// across all concurrent `enrich --jobs` tasks via a shared `RateGate` (S2
+/// calls run concurrently under `buffer_unordered`, unlike PubMed's
+/// sequential self-throttling in `sources/pubmed.rs`, so a per-task sleep
+/// wouldn't pace the aggregate rate).
+const S2_NO_KEY_DELAY: Duration = Duration::from_millis(3000);
+const S2_KEY_DELAY: Duration = Duration::from_millis(1000);
+/// Consecutive 429s from Semantic Scholar before the circuit breaker opens
+/// and further S2 calls are skipped (falling straight through to the
+/// existing OpenAlex/Crossref fallback chain) for `S2_BREAKER_COOLDOWN`.
+const S2_BREAKER_THRESHOLD: u32 = 3;
+const S2_BREAKER_COOLDOWN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum AbstractSource {
@@ -583,6 +599,8 @@ pub struct Enricher {
     openreview_cache: HashMap<(String, i32), HashMap<String, String>>,
     doi_cache: HashMap<String, Option<String>>,
     openreview_login_token: OnceLock<String>,
+    s2_gate: RateGate,
+    s2_breaker: CircuitBreaker,
 }
 
 pub enum EnrichResult {
@@ -594,6 +612,100 @@ pub enum EnrichResult {
 enum RateLimitRetry {
     Enabled,
     Disabled,
+}
+
+/// Proactively paces requests to a shared minimum interval, coordinated
+/// across concurrent callers via a mutex-guarded "next allowed" instant
+/// (a per-task `sleep` wouldn't pace the *aggregate* rate when callers run
+/// concurrently, e.g. under `enrich --jobs`).
+struct RateGate {
+    next_allowed: std::sync::Mutex<tokio::time::Instant>,
+    delay: Duration,
+}
+
+impl RateGate {
+    fn new(delay: Duration) -> Self {
+        Self {
+            next_allowed: std::sync::Mutex::new(tokio::time::Instant::now()),
+            delay,
+        }
+    }
+
+    async fn wait(&self) {
+        let sleep_for = {
+            let mut next = self.next_allowed.lock().unwrap();
+            let now = tokio::time::Instant::now();
+            let wait_until = (*next).max(now);
+            *next = wait_until + self.delay;
+            wait_until.saturating_duration_since(now)
+        };
+        if !sleep_for.is_zero() {
+            tokio::time::sleep(sleep_for).await;
+        }
+    }
+}
+
+/// Opens after a run of consecutive rate-limit responses, so a source that's
+/// clearly being throttled gets skipped (letting existing fallback logic
+/// take over) instead of being hammered with doomed requests. Any success
+/// clears it immediately; otherwise it auto-closes once the cooldown elapses.
+struct CircuitBreaker {
+    state: std::sync::Mutex<BreakerState>,
+    threshold: u32,
+    cooldown: Duration,
+}
+
+struct BreakerState {
+    consecutive_failures: u32,
+    open_until: Option<tokio::time::Instant>,
+}
+
+impl CircuitBreaker {
+    fn new(threshold: u32, cooldown: Duration) -> Self {
+        Self {
+            state: std::sync::Mutex::new(BreakerState {
+                consecutive_failures: 0,
+                open_until: None,
+            }),
+            threshold,
+            cooldown,
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let Some(until) = state.open_until else {
+            return false;
+        };
+        if tokio::time::Instant::now() < until {
+            return true;
+        }
+        state.open_until = None;
+        state.consecutive_failures = 0;
+        false
+    }
+
+    fn record_success(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.consecutive_failures = 0;
+        state.open_until = None;
+    }
+
+    fn record_rate_limited(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.consecutive_failures += 1;
+        if state.consecutive_failures >= self.threshold {
+            state.open_until = Some(tokio::time::Instant::now() + self.cooldown);
+        }
+    }
+}
+
+fn s2_delay_for(secrets: &Secrets) -> Duration {
+    if secrets.semantic_scholar_key.is_some() {
+        S2_KEY_DELAY
+    } else {
+        S2_NO_KEY_DELAY
+    }
 }
 
 fn store_doi_batch_results(
@@ -620,12 +732,15 @@ impl Enricher {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client");
+        let s2_gate = RateGate::new(s2_delay_for(&secrets));
         Self {
             client,
             secrets,
             openreview_cache: HashMap::new(),
             doi_cache: HashMap::new(),
             openreview_login_token: OnceLock::new(),
+            s2_gate,
+            s2_breaker: CircuitBreaker::new(S2_BREAKER_THRESHOLD, S2_BREAKER_COOLDOWN),
         }
     }
 
@@ -1038,18 +1153,34 @@ impl Enricher {
         &self,
         plain_req: reqwest::RequestBuilder,
     ) -> std::result::Result<Value, String> {
-        let Some(key) = &self.secrets.semantic_scholar_key else {
-            return self.fetch_json(plain_req, RateLimitRetry::Enabled).await;
-        };
-        let fallback = plain_req.try_clone();
-        let req = plain_req.header("x-api-key", key);
-        match self.fetch_json(req, RateLimitRetry::Enabled).await {
-            Err(reason) if should_retry_without_api_key(&reason) => match fallback {
-                Some(req) => self.fetch_json(req, RateLimitRetry::Enabled).await,
-                None => Err(reason),
-            },
-            other => other,
+        if self.s2_breaker.is_open() {
+            return Err("Semantic Scholar rate limited repeatedly; cooling down".into());
         }
+        self.s2_gate.wait().await;
+
+        let result = match &self.secrets.semantic_scholar_key {
+            None => self.fetch_json(plain_req, RateLimitRetry::Enabled).await,
+            Some(key) => {
+                let fallback = plain_req.try_clone();
+                let req = plain_req.header("x-api-key", key);
+                match self.fetch_json(req, RateLimitRetry::Enabled).await {
+                    Err(reason) if should_retry_without_api_key(&reason) => match fallback {
+                        Some(req) => self.fetch_json(req, RateLimitRetry::Enabled).await,
+                        None => Err(reason),
+                    },
+                    other => other,
+                }
+            }
+        };
+
+        match &result {
+            Ok(_) => self.s2_breaker.record_success(),
+            Err(reason) if reason.starts_with("HTTP 429") => {
+                self.s2_breaker.record_rate_limited();
+            }
+            Err(_) => {}
+        }
+        result
     }
 
     async fn fetch_json(
@@ -1057,14 +1188,17 @@ impl Enricher {
         req: reqwest::RequestBuilder,
         retry_rate_limits: RateLimitRetry,
     ) -> std::result::Result<Value, String> {
-        let rate_limit_req = req.try_clone();
+        let mut retry_req = req.try_clone();
         let mut resp = self.send(req).await?;
-        if matches!(retry_rate_limits, RateLimitRetry::Enabled)
-            && resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-        {
-            if let Some(req) = rate_limit_req {
+        if matches!(retry_rate_limits, RateLimitRetry::Enabled) {
+            for _ in 0..MAX_RATE_LIMIT_RETRIES {
+                if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    break;
+                }
+                let Some(next_req) = retry_req else { break };
                 tokio::time::sleep(rate_limit_delay(&resp)).await;
-                resp = self.send(req).await?;
+                retry_req = next_req.try_clone();
+                resp = self.send(next_req).await?;
             }
         }
         if !resp.status().is_success() {
@@ -2234,5 +2368,71 @@ mod tests {
         assert!(parse_static_url("http://127.0.0.1/paper").is_none());
         assert!(parse_static_url("http://[::1]/paper").is_none());
         assert!(parse_static_url("https://user@example.com/paper").is_none());
+    }
+
+    #[test]
+    fn s2_delay_uses_shorter_spacing_with_api_key() {
+        let mut secrets = Secrets::default();
+        assert_eq!(s2_delay_for(&secrets), S2_NO_KEY_DELAY);
+        secrets.semantic_scholar_key = Some("key".into());
+        assert_eq!(s2_delay_for(&secrets), S2_KEY_DELAY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_gate_enforces_minimum_spacing() {
+        let gate = RateGate::new(Duration::from_millis(1000));
+        let start = tokio::time::Instant::now();
+        gate.wait().await;
+        gate.wait().await;
+        gate.wait().await;
+        assert!(tokio::time::Instant::now() - start >= Duration::from_millis(2000));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_gate_paces_concurrent_callers() {
+        let gate = RateGate::new(Duration::from_millis(1000));
+        let start = tokio::time::Instant::now();
+        tokio::join!(gate.wait(), gate.wait(), gate.wait());
+        assert!(
+            tokio::time::Instant::now() - start >= Duration::from_millis(2000),
+            "concurrent callers must be serialized to the same aggregate rate as sequential ones"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn circuit_breaker_opens_after_consecutive_429s() {
+        let breaker = CircuitBreaker::new(3, Duration::from_secs(30));
+        assert!(!breaker.is_open());
+        breaker.record_rate_limited();
+        breaker.record_rate_limited();
+        assert!(!breaker.is_open(), "below threshold, should stay closed");
+        breaker.record_rate_limited();
+        assert!(breaker.is_open(), "at threshold, should open");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn circuit_breaker_recovers_after_cooldown_elapses() {
+        let breaker = CircuitBreaker::new(1, Duration::from_secs(30));
+        breaker.record_rate_limited();
+        assert!(breaker.is_open());
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert!(breaker.is_open(), "cooldown hasn't elapsed yet");
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(
+            !breaker.is_open(),
+            "cooldown elapsed, breaker should auto-close"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn circuit_breaker_success_resets_failure_count() {
+        let breaker = CircuitBreaker::new(2, Duration::from_secs(30));
+        breaker.record_rate_limited();
+        breaker.record_success();
+        breaker.record_rate_limited();
+        assert!(
+            !breaker.is_open(),
+            "success should reset the counter below threshold"
+        );
     }
 }

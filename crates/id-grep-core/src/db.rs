@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use rusqlite::{params_from_iter, types::Value, Connection, OpenFlags, Row};
+use rusqlite::{params_from_iter, types::Value, Connection, OpenFlags, OptionalExtension, Row};
 
-use crate::config::RankSortOrder;
+use crate::config::{Config, RankSortOrder};
 use crate::query::{FilterExpr, YearRange};
 use crate::{Paper, Result};
 
@@ -57,6 +57,15 @@ CREATE TRIGGER IF NOT EXISTS papers_au AFTER UPDATE ON papers BEGIN
     INSERT INTO papers_fts(rowid, title, authors, abstract)
     VALUES (new.id, new.title, new.authors, new.abstract);
 END;
+
+-- User data, not a rebuildable cache: never dropped by the schema-version
+-- rebuild in `Database::init` below.
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT UNIQUE NOT NULL,
+    query        TEXT NOT NULL,
+    last_run_at  TEXT
+);
 "#;
 
 const PAPER_COLUMNS_WITH_ALIAS: &str =
@@ -92,6 +101,18 @@ pub struct Database {
 pub struct MissingPaper {
     pub id: i64,
     pub paper: Paper,
+}
+
+/// A named query persisted for repeated `search run` invocations.
+///
+/// `last_run_at` is `None` until the first successful run; once set, it's
+/// the same `datetime('now')` text format as `papers.updated_at`, so the two
+/// are directly comparable via `FilterExpr::AddedSince`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedSearch {
+    pub name: String,
+    pub query: String,
+    pub last_run_at: Option<String>,
 }
 
 impl Database {
@@ -276,6 +297,64 @@ impl Database {
             .query_row(&sql, params_from_iter(parts.args.iter()), |r| r.get(0))?;
         Ok(count as usize)
     }
+
+    /// Persist a named query, validating it parses first. Resaving an
+    /// existing name replaces its query and resets `last_run_at` to `None`
+    /// (last writer wins; a changed query starts tracking fresh).
+    pub fn save_search(&mut self, name: &str, query: &str, config: &Config) -> Result<()> {
+        crate::query::parse(query, config)?;
+        self.conn.execute(
+            "INSERT INTO saved_searches (name, query, last_run_at) VALUES (?1, ?2, NULL)
+             ON CONFLICT(name) DO UPDATE SET query = excluded.query, last_run_at = NULL",
+            rusqlite::params![name, query],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_saved_search(&self, name: &str) -> Result<Option<SavedSearch>> {
+        self.conn
+            .query_row(
+                "SELECT name, query, last_run_at FROM saved_searches WHERE name = ?1",
+                rusqlite::params![name],
+                row_to_saved_search,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn list_saved_searches(&self) -> Result<Vec<SavedSearch>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, query, last_run_at FROM saved_searches ORDER BY name")?;
+        let rows = stmt
+            .query_map([], row_to_saved_search)?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Returns whether a saved search with this name existed and was removed.
+    pub fn remove_saved_search(&mut self, name: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM saved_searches WHERE name = ?1", [name])?;
+        Ok(n > 0)
+    }
+
+    pub fn touch_saved_search_last_run(&mut self, name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE saved_searches SET last_run_at = datetime('now') WHERE name = ?1",
+            [name],
+        )?;
+        Ok(())
+    }
+}
+
+fn row_to_saved_search(row: &Row) -> rusqlite::Result<SavedSearch> {
+    Ok(SavedSearch {
+        name: row.get(0)?,
+        query: row.get(1)?,
+        last_run_at: row.get(2)?,
+    })
 }
 
 fn in_clause(column: &str, start: usize, value_count: usize) -> String {
@@ -412,6 +491,11 @@ fn filter_clause(filter: &FilterExpr, args: &mut Vec<Value>) -> String {
             let next = args.len() + 1;
             args.push(format!("%{}%", escape_like(term)).into());
             format!("(COALESCE(p.doi, '') LIKE ?{next} ESCAPE '\\')")
+        }
+        FilterExpr::AddedSince(date) => {
+            let next = args.len() + 1;
+            args.push(date.clone().into());
+            format!("p.updated_at >= ?{next}")
         }
         FilterExpr::And(filters) => boolean_filter_clause("AND", filters, args),
         FilterExpr::Or(filters) => boolean_filter_clause("OR", filters, args),
@@ -610,6 +694,30 @@ mod tests {
     }
 
     #[test]
+    fn added_since_filter() {
+        let db = seeded();
+        db.conn
+            .execute(
+                "UPDATE papers SET updated_at = ?1 WHERE paper_key = ?2",
+                rusqlite::params!["2000-01-01 00:00:00", "k1"],
+            )
+            .unwrap();
+        let hits = db
+            .search(&Search {
+                filter: Some(FilterExpr::AddedSince("2020-01-01".into())),
+                ..Default::default()
+            })
+            .unwrap();
+        let keys = hits
+            .iter()
+            .map(|paper| paper.key.as_str())
+            .collect::<Vec<_>>();
+        assert!(!keys.contains(&"k1"));
+        assert!(keys.contains(&"k2"));
+        assert!(keys.contains(&"k3"));
+    }
+
+    #[test]
     fn repeated_year_filters_match_any_range() {
         let db = seeded();
         let hits = db
@@ -783,6 +891,136 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].key, "k2");
+    }
+
+    #[test]
+    fn saved_search_round_trip() {
+        let mut db = seeded();
+        let config = crate::config::Config::defaults().unwrap();
+        db.save_search("weekly-epi", "transmission WHERE venue:eid", &config)
+            .unwrap();
+
+        let saved = db.get_saved_search("weekly-epi").unwrap().unwrap();
+        assert_eq!(saved.query, "transmission WHERE venue:eid");
+        assert_eq!(saved.last_run_at, None);
+
+        let all = db.list_saved_searches().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "weekly-epi");
+
+        assert!(db.remove_saved_search("weekly-epi").unwrap());
+        assert!(db.get_saved_search("weekly-epi").unwrap().is_none());
+        assert!(!db.remove_saved_search("weekly-epi").unwrap());
+    }
+
+    #[test]
+    fn saved_search_rejects_invalid_query() {
+        let mut db = seeded();
+        let config = crate::config::Config::defaults().unwrap();
+        assert!(db
+            .save_search("bad", "* WHERE venue:nope", &config)
+            .is_err());
+        assert!(db.get_saved_search("bad").unwrap().is_none());
+    }
+
+    #[test]
+    fn saved_search_run_uses_last_run_at() {
+        let mut db = seeded();
+        for key in ["k1", "k2", "k3"] {
+            db.conn
+                .execute(
+                    "UPDATE papers SET updated_at = ?1 WHERE paper_key = ?2",
+                    rusqlite::params!["2000-01-01 00:00:00", key],
+                )
+                .unwrap();
+        }
+        let config = crate::config::Config::defaults().unwrap();
+        db.save_search("recent", "* WHERE year:2019-", &config)
+            .unwrap();
+        db.touch_saved_search_last_run("recent").unwrap();
+        let last_run_at = db
+            .get_saved_search("recent")
+            .unwrap()
+            .unwrap()
+            .last_run_at
+            .unwrap();
+
+        db.upsert_papers(&[paper("k4", "EID", 2023, "New reservoir finding", None)])
+            .unwrap();
+
+        let hits = db
+            .search(&Search {
+                filter: Some(FilterExpr::AddedSince(last_run_at)),
+                ..Default::default()
+            })
+            .unwrap();
+        let keys = hits.iter().map(|p| p.key.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, vec!["k4"]);
+    }
+
+    #[test]
+    fn saved_searches_survive_schema_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE papers (
+                    id       INTEGER PRIMARY KEY,
+                    dblp_key TEXT UNIQUE NOT NULL,
+                    venue    TEXT NOT NULL,
+                    year     INTEGER NOT NULL,
+                    title    TEXT NOT NULL,
+                    authors  TEXT NOT NULL,
+                    doi TEXT, url TEXT, abstract TEXT
+                );
+                CREATE TABLE saved_searches (
+                    id          INTEGER PRIMARY KEY,
+                    name        TEXT UNIQUE NOT NULL,
+                    query       TEXT NOT NULL,
+                    last_run_at TEXT
+                );
+                INSERT INTO saved_searches (name, query, last_run_at)
+                VALUES ('weekly', '* WHERE tag:epi', NULL);
+                "#,
+            )
+            .unwrap();
+        }
+
+        // Opening through Database rebuilds the stale `papers`/`papers_fts`
+        // schema (see `open_rebuilds_incompatible_old_schema` above), but
+        // `saved_searches` must survive since it isn't a rebuildable cache.
+        let db = Database::open(&path).unwrap();
+        let saved = db.get_saved_search("weekly").unwrap();
+        assert_eq!(saved.map(|s| s.query), Some("* WHERE tag:epi".to_string()));
+    }
+
+    #[test]
+    fn set_abstracts_only_touches_updated_at_for_included_papers() {
+        let mut db = seeded();
+        db.conn
+            .execute(
+                "UPDATE papers SET updated_at = ?1",
+                rusqlite::params!["2000-01-01 00:00:00"],
+            )
+            .unwrap();
+
+        // Simulates `enrich`: only k2 is "found" this run; k1 and k3 are
+        // skipped (e.g. rate limited) and must not have their updated_at
+        // touched, or a subsequent added-since/saved-search filter would
+        // wrongly treat them as new.
+        db.set_abstracts(&[("k2".into(), "a batched cache timing leak".into())])
+            .unwrap();
+
+        let hits = db
+            .search(&Search {
+                filter: Some(FilterExpr::AddedSince("2020-01-01".into())),
+                ..Default::default()
+            })
+            .unwrap();
+        let keys = hits.iter().map(|p| p.key.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, vec!["k2"]);
     }
 
     #[test]

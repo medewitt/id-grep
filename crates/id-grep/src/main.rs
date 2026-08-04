@@ -104,6 +104,68 @@ enum Command {
     Update(UpdateArgs),
     /// Fill missing abstracts on the existing database (no re-fetch of metadata).
     Enrich(EnrichArgs),
+    /// Manage saved searches (save/run/list/rm).
+    Search(SearchArgs),
+}
+
+#[derive(clap::Args)]
+struct SearchArgs {
+    #[command(subcommand)]
+    action: SearchAction,
+}
+
+#[derive(Subcommand)]
+enum SearchAction {
+    /// Save a named query for repeated `search run` invocations.
+    Save(SaveArgs),
+    /// Run a saved query, showing only rows added/changed since its last run.
+    Run(RunArgs),
+    /// List saved queries.
+    List(ListArgs),
+    /// Remove a saved query.
+    Rm(RmArgs),
+}
+
+#[derive(clap::Args)]
+struct SaveArgs {
+    /// Name to save this query under.
+    name: String,
+    /// The query to save, e.g. 'transmission WHERE venue:Epidemics'.
+    query: String,
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    /// Name of the saved query to run.
+    name: String,
+    /// Preview matches without advancing the saved search's last-run marker.
+    #[arg(long)]
+    peek: bool,
+    /// Output format (default: table).
+    #[arg(long)]
+    format: Option<Format>,
+    /// Result ordering (default: relevance).
+    #[arg(long, value_enum)]
+    sort: Option<SortMode>,
+    /// Limit number of results.
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Columns for table/csv output (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    fields: Vec<Column>,
+}
+
+#[derive(clap::Args)]
+struct ListArgs {
+    /// Output format (default: table).
+    #[arg(long)]
+    format: Option<Format>,
+}
+
+#[derive(clap::Args)]
+struct RmArgs {
+    /// Name of the saved query to remove.
+    name: String,
 }
 
 /// Default number of concurrent abstract fetches.
@@ -208,6 +270,7 @@ async fn run(cli: Cli) -> Result<ExitStatus> {
         Some(Command::Enrich(args)) => cmd_enrich(args, &cli, &paths, &config)
             .await
             .map(|()| ExitStatus::Ok),
+        Some(Command::Search(args)) => cmd_search_action(args, &cli, &paths, &config),
         None if cli.tui => {
             let db = open_db(&cli, &paths)?;
             tui::run(db, config).map(|()| ExitStatus::Ok)
@@ -427,6 +490,118 @@ pub(crate) fn build_search(
         limit,
         offset,
     })
+}
+
+fn not_found(name: &str) -> anyhow::Error {
+    id_grep_core::Error::Config(format!("no saved search named `{name}`")).into()
+}
+
+fn cmd_search_action(
+    args: &SearchArgs,
+    cli: &Cli,
+    paths: &Paths,
+    config: &Config,
+) -> Result<ExitStatus> {
+    let mut db = open_db(cli, paths)?;
+    match &args.action {
+        SearchAction::Save(args) => cmd_search_save(args, &mut db, config),
+        SearchAction::Run(args) => cmd_search_run(args, &mut db, config),
+        SearchAction::List(args) => cmd_search_list(args, &db),
+        SearchAction::Rm(args) => cmd_search_rm(args, &mut db),
+    }
+}
+
+fn cmd_search_save(args: &SaveArgs, db: &mut Database, config: &Config) -> Result<ExitStatus> {
+    db.save_search(&args.name, &args.query, config)?;
+    log_header("id-grep search save");
+    log_field("name", &args.name);
+    log_field("query", &args.query);
+    Ok(ExitStatus::Ok)
+}
+
+fn cmd_search_run(args: &RunArgs, db: &mut Database, config: &Config) -> Result<ExitStatus> {
+    let saved = db
+        .get_saved_search(&args.name)?
+        .ok_or_else(|| not_found(&args.name))?;
+
+    let mut search = build_search(
+        &saved.query,
+        config,
+        args.sort.unwrap_or(SortMode::Relevance),
+        args.limit,
+        None,
+    )?;
+    if let Some(last_run_at) = &saved.last_run_at {
+        let added_since = query::FilterExpr::AddedSince(last_run_at.clone());
+        search.filter = Some(match search.filter.take() {
+            Some(existing) => query::FilterExpr::And(vec![existing, added_since]),
+            None => added_since,
+        });
+    }
+
+    let papers = db.search(&search)?;
+    let columns = (!args.fields.is_empty()).then_some(args.fields.as_slice());
+    let format = args.format.unwrap_or(Format::Table);
+    let out = output::render(&papers, format, columns, None).map_err(|e| anyhow::anyhow!(e))?;
+    if !out.is_empty() {
+        print!("{out}");
+        if !out.ends_with('\n') {
+            println!();
+        }
+    }
+    if matches!(format, Format::Table) && !quiet() {
+        eprintln!("results    {}", papers.len());
+    }
+
+    if !args.peek {
+        db.touch_saved_search_last_run(&args.name)?;
+    }
+
+    Ok(if papers.is_empty() {
+        ExitStatus::NoResults
+    } else {
+        ExitStatus::Ok
+    })
+}
+
+fn cmd_search_list(args: &ListArgs, db: &Database) -> Result<ExitStatus> {
+    let searches = db.list_saved_searches()?;
+    let format = args.format.unwrap_or(Format::Table);
+    if matches!(format, Format::Json) {
+        let payload = serde_json::json!({
+            "schema_version": output::SCHEMA_VERSION,
+            "count": searches.len(),
+            "saved_searches": searches.iter().map(|s| serde_json::json!({
+                "name": s.name,
+                "query": s.query,
+                "last_run_at": s.last_run_at,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{payload}");
+    } else if searches.is_empty() {
+        if !quiet() {
+            eprintln!("no saved searches");
+        }
+    } else {
+        for s in &searches {
+            println!(
+                "{:<20} {:<50} {}",
+                s.name,
+                s.query,
+                s.last_run_at.as_deref().unwrap_or("never")
+            );
+        }
+    }
+    Ok(ExitStatus::Ok)
+}
+
+fn cmd_search_rm(args: &RmArgs, db: &mut Database) -> Result<ExitStatus> {
+    if !db.remove_saved_search(&args.name)? {
+        return Err(not_found(&args.name));
+    }
+    log_header("id-grep search rm");
+    log_field("name", &args.name);
+    Ok(ExitStatus::Ok)
 }
 
 async fn cmd_update(args: &UpdateArgs, cli: &Cli, paths: &Paths, config: &Config) -> Result<()> {
@@ -703,6 +878,73 @@ mod tests {
         assert_eq!(args.since, Some(2025));
         assert_eq!(args.jobs, 4);
         assert_eq!(args.limit, Some(10));
+    }
+
+    #[test]
+    fn search_save_args_are_parsed() {
+        let cli = Cli::try_parse_from([
+            "id-grep",
+            "search",
+            "save",
+            "weekly-epi",
+            "transmission WHERE venue:Epidemics",
+        ])
+        .unwrap();
+        let Some(Command::Search(args)) = cli.command else {
+            panic!("expected search command");
+        };
+        let SearchAction::Save(save_args) = args.action else {
+            panic!("expected save action");
+        };
+        assert_eq!(save_args.name, "weekly-epi");
+        assert_eq!(save_args.query, "transmission WHERE venue:Epidemics");
+    }
+
+    #[test]
+    fn search_run_args_are_parsed() {
+        let cli = Cli::try_parse_from([
+            "id-grep",
+            "search",
+            "run",
+            "weekly-epi",
+            "--peek",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        let Some(Command::Search(args)) = cli.command else {
+            panic!("expected search command");
+        };
+        let SearchAction::Run(run_args) = args.action else {
+            panic!("expected run action");
+        };
+        assert_eq!(run_args.name, "weekly-epi");
+        assert!(run_args.peek);
+        assert_eq!(run_args.format, Some(Format::Json));
+    }
+
+    #[test]
+    fn search_list_args_are_parsed() {
+        let cli = Cli::try_parse_from(["id-grep", "search", "list", "--format", "json"]).unwrap();
+        let Some(Command::Search(args)) = cli.command else {
+            panic!("expected search command");
+        };
+        let SearchAction::List(list_args) = args.action else {
+            panic!("expected list action");
+        };
+        assert_eq!(list_args.format, Some(Format::Json));
+    }
+
+    #[test]
+    fn search_rm_args_are_parsed() {
+        let cli = Cli::try_parse_from(["id-grep", "search", "rm", "weekly-epi"]).unwrap();
+        let Some(Command::Search(args)) = cli.command else {
+            panic!("expected search command");
+        };
+        let SearchAction::Rm(rm_args) = args.action else {
+            panic!("expected rm action");
+        };
+        assert_eq!(rm_args.name, "weekly-epi");
     }
 
     #[test]

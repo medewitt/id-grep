@@ -47,6 +47,7 @@ pub enum FilterExpr {
     Venue(Vec<String>),
     Year(YearRange),
     Doi(String),
+    AddedSince(String),
     And(Vec<FilterExpr>),
     Or(Vec<FilterExpr>),
     Not(Box<FilterExpr>),
@@ -94,6 +95,7 @@ enum MetadataField {
     Rank,
     Tag,
     Doi,
+    AddedSince,
 }
 
 impl MetadataField {
@@ -104,6 +106,7 @@ impl MetadataField {
             Self::Rank => "rank",
             Self::Tag => "tag",
             Self::Doi => "doi",
+            Self::AddedSince => "added-since",
         }
     }
 }
@@ -128,6 +131,7 @@ fn map_field(name: &str) -> Option<FieldKind> {
         "rank" => FieldKind::Metadata(MetadataField::Rank),
         "tag" => FieldKind::Metadata(MetadataField::Tag),
         "doi" => FieldKind::Metadata(MetadataField::Doi),
+        "added-since" => FieldKind::Metadata(MetadataField::AddedSince),
         _ => return None,
     };
     Some(field)
@@ -222,7 +226,7 @@ fn push_word(out: &mut Vec<Tok>, word: String) -> Result<()> {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         {
             return Err(Error::Query(format!(
-                "unknown field `{name}`; expected title, author, abstract, venue, year, rank, tag, or doi"
+                "unknown field `{name}`; expected title, author, abstract, venue, year, rank, tag, doi, or added-since"
             )));
         }
     }
@@ -465,6 +469,7 @@ fn filter_atom(field: MetadataField, node: Node, config: &Config) -> Result<Filt
         }
         MetadataField::Year => Ok(FilterExpr::Year(parse_year_range(&value)?)),
         MetadataField::Doi => Ok(FilterExpr::Doi(value)),
+        MetadataField::AddedSince => Ok(FilterExpr::AddedSince(parse_date(&value)?)),
     }
 }
 
@@ -539,6 +544,29 @@ pub fn parse_year_range(s: &str) -> Result<YearRange> {
             YearRange::new(min, max).map_err(|_| bad())
         }
     }
+}
+
+/// Validates a `YYYY-MM-DD` date and returns it unchanged for use as a
+/// lexicographically-comparable bound against the `updated_at` column
+/// (stored as SQLite `datetime('now')` text in the same format).
+pub fn parse_date(s: &str) -> Result<String> {
+    let s = s.trim();
+    let bad = || Error::Query(format!("invalid date `{s}`; use YYYY-MM-DD"));
+    let mut parts = s.split('-');
+    let (Some(year), Some(month), Some(day), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(bad());
+    };
+    if year.len() != 4 || month.len() != 2 || day.len() != 2 {
+        return Err(bad());
+    }
+    let month: u32 = month.parse().map_err(|_| bad())?;
+    let day: u32 = day.parse().map_err(|_| bad())?;
+    if year.parse::<i32>().is_err() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Err(bad());
+    }
+    Ok(s.to_string())
 }
 
 fn negation_error() -> Error {
@@ -636,6 +664,24 @@ mod tests {
         assert!(parse_year_range("-").is_err());
         assert!(parse_year_range("abc").is_err());
         assert!(parse_year_range("2024-2018").is_err());
+    }
+
+    #[test]
+    fn added_since_parses_valid_date() {
+        let parsed = parse("* WHERE added-since:2026-07-01", &config()).unwrap();
+        assert_eq!(
+            parsed.filter,
+            Some(FilterExpr::AddedSince("2026-07-01".into()))
+        );
+    }
+
+    #[test]
+    fn added_since_rejects_invalid_date() {
+        assert!(parse("* WHERE added-since:not-a-date", &config()).is_err());
+        assert!(parse("* WHERE added-since:2026-13-01", &config()).is_err());
+        assert!(parse("* WHERE added-since:2026-01-32", &config()).is_err());
+        assert!(parse("* WHERE added-since:2026-7-1", &config()).is_err());
+        assert!(parse("* WHERE added-since:2026-01", &config()).is_err());
     }
 
     #[test]
